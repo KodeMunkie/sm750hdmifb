@@ -166,7 +166,7 @@ static bool double_shadow = SM750_DRM_DEFAULT_DOUBLE_SHADOW;
 static bool disable_hardware_cursor =
 	SM750_DRM_DEFAULT_DISABLE_HARDWARE_CURSOR;
 static bool disable_dma = SM750_DRM_DEFAULT_DISABLE_DMA;
-static unsigned int shadow_dma_min_bytes = 256;
+static unsigned int shadow_dma_min_bytes = 4096;
 module_param(scanout_format, charp, 0444);
 module_param(dither_green_gain, uint, 0444);
 module_param(edid_only, bool, 0444);
@@ -190,7 +190,7 @@ MODULE_PARM_DESC(disable_hardware_cursor,
 	"Disable the hardware cursor plane and use software cursor rendering");
 MODULE_PARM_DESC(disable_dma, "Force CPU shadow uploads instead of DMA1");
 MODULE_PARM_DESC(shadow_dma_min_bytes,
-	"Minimum aligned shadow span for DMA (default 256 bytes)");
+	"Minimum aligned shadow span for DMA (default 4096 bytes)");
 
 struct sm750_drm_device {
 	struct drm_device drm;
@@ -225,6 +225,7 @@ struct sm750_drm_device {
 	u32 cursor_offset;
 	u32 dma_master_base;
 	u32 dma_source_address;
+	u32 shadow_source_width;
 	u32 shadow_source_height;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	u64 vblank_line_ns;
@@ -1349,34 +1350,66 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 				(dst_x2 - dst_x1) * sizeof(u16));
 			continue;
 		}
-		size_t src_offset = (size_t)y * plane_state->fb->pitches[0] +
-			(size_t)rect->x1 * sizeof(u32);
-		size_t dst_offset = (size_t)y * sdev->scanout_pitch +
-			(size_t)rect->x1 *
-			(sdev->rgb565 ? sizeof(u16) : sizeof(u32));
+		unsigned int src_x1 = clamp_t(int, rect->x1, 0,
+						  sdev->shadow_source_width);
+		unsigned int src_x2 = clamp_t(int, rect->x2, 0,
+						  sdev->shadow_source_width);
+		unsigned int changed_x1 = 0;
+		unsigned int changed_x2;
+		u32 *snapshot = double_shadow ? sdev->shadow_source_snapshot +
+			(size_t)y * SM750_DRM_MAX_WIDTH + src_x1 : NULL;
+		size_t src_offset;
+		size_t dst_offset;
 
+		if (src_x1 >= src_x2)
+			continue;
+		width = src_x2 - src_x1;
+		changed_x2 = width;
+		src_offset = (size_t)y * plane_state->fb->pitches[0] +
+			(size_t)src_x1 * sizeof(u32);
 		iosys_map_memcpy_from(sdev->dither_source_line, src,
 				      src_offset, width * sizeof(u32));
+		if (snapshot && sdev->shadow_source_snapshot_valid) {
+			while (changed_x1 < changed_x2 &&
+			       sdev->dither_source_line[changed_x1] ==
+			       snapshot[changed_x1])
+				changed_x1++;
+			if (changed_x1 == changed_x2)
+				continue;
+			while (changed_x2 > changed_x1 &&
+			       sdev->dither_source_line[changed_x2 - 1] ==
+			       snapshot[changed_x2 - 1])
+				changed_x2--;
+		}
+		if (snapshot)
+			memcpy(snapshot + changed_x1,
+			       sdev->dither_source_line + changed_x1,
+			       (changed_x2 - changed_x1) * sizeof(u32));
+		src_x1 += changed_x1;
+		width = changed_x2 - changed_x1;
+		dst_offset = (size_t)y * sdev->scanout_pitch +
+			(size_t)src_x1 *
+			(sdev->rgb565 ? sizeof(u16) : sizeof(u32));
 		if (!sdev->rgb565) {
 			sm750_shadow_upload(sdev, dst_offset,
-				sdev->dither_source_line, width * sizeof(u32));
+				sdev->dither_source_line + changed_x1,
+				width * sizeof(u32));
 			continue;
 		}
 		if (sdev->bbdither)
 			sm750_dither_xrgb8888_to_rgb565(sdev->dither,
 					sdev->dither_output_line, width,
-					sdev->dither_source_line, width,
-					rect->x1, y, width, 1);
+					sdev->dither_source_line + changed_x1,
+					width, src_x1, y, width, 1);
 		else
 			sm750_xrgb8888_to_rgb565(sdev->dither_output_line,
-					sdev->dither_source_line, width);
+					sdev->dither_source_line + changed_x1, width);
 		sm750_shadow_upload(sdev, dst_offset, sdev->dither_output_line,
 				width * sizeof(u16));
 	}
 	if (double_shadow && !sdev->shadow_source_snapshot_valid &&
-	    sdev->softscale_active &&
 	    rect->x1 <= 0 && rect->y1 <= 0 &&
-	    rect->x2 >= sdev->softscale_source_width &&
+	    rect->x2 >= sdev->shadow_source_width &&
 	    rect->y2 >= sdev->shadow_source_height)
 		sdev->shadow_source_snapshot_valid = true;
 	wmb();
@@ -1791,6 +1824,7 @@ static void sm750_pipe_enable(struct drm_simple_display_pipe *pipe,
 			&crtc_state->adjusted_mode);
 		sdev->softscale_source_width = sdev->softscale_active ?
 			crtc_state->adjusted_mode.hdisplay : 0;
+		sdev->shadow_source_width = crtc_state->adjusted_mode.hdisplay;
 		sdev->shadow_source_height = crtc_state->adjusted_mode.vdisplay;
 		sdev->shadow_source_snapshot_valid = false;
 		if (sdev->softscale_active &&
@@ -1830,6 +1864,7 @@ static void sm750_pipe_enable(struct drm_simple_display_pipe *pipe,
 fail:
 	sdev->softscale_active = false;
 	sdev->softscale_source_width = 0;
+	sdev->shadow_source_width = 0;
 	sdev->shadow_source_height = 0;
 	sdev->shadow_source_snapshot_valid = false;
 	drm_err(&sdev->drm, "failed to enable HDMI mode: %d\n", ret);
@@ -1871,6 +1906,7 @@ static void sm750_pipe_disable(struct drm_simple_display_pipe *pipe)
 	mutex_unlock(&sdev->mode_lock);
 	sdev->softscale_active = false;
 	sdev->softscale_source_width = 0;
+	sdev->shadow_source_width = 0;
 	sdev->shadow_source_height = 0;
 	sdev->shadow_source_snapshot_valid = false;
 }

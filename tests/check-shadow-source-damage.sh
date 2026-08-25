@@ -7,6 +7,7 @@ source_file=$project_dir/src/sm750_drm.c
 
 for requirement in \
 	'u32 *shadow_source_snapshot;' \
+	'u32 shadow_source_width;' \
 	'bool shadow_source_snapshot_valid;' \
 	'module_param(double_shadow, bool, 0444);' \
 	'return drm_gem_plane_helper_prepare_fb(&pipe->plane, plane_state);' \
@@ -14,6 +15,9 @@ for requirement in \
 	'sdev->dither_source_line[changed_x1] ==' \
 	'sdev->dither_source_line[changed_x2 - 1] ==' \
 	'memcpy(snapshot + changed_x1,' \
+	'src_x1 += changed_x1;' \
+	'sdev->dither_source_line + changed_x1,' \
+	'rect->x2 >= sdev->shadow_source_width' \
 	'sdev->shadow_source_snapshot_valid = false;' \
 	'sdev->shadow_source_snapshot_valid = true;' \
 	'sdev->shadow_source_snapshot = kvcalloc('; do
@@ -51,6 +55,34 @@ BEGIN {
 	new[0] = 77
 	new[7] = 66
 	if (changed_span(old, new, 8) != "0:8")
+		exit 1
+}
+' /dev/null
+
+awk '
+function changed_span(old, new, start, count, result, first, last, x) {
+	first = 0
+	while (first < count && old[start + first] == new[first])
+		first++
+	if (first == count)
+		return "none"
+	last = count
+	while (last > first && old[start + last - 1] == new[last - 1])
+		last--
+	return start + first ":" start + last
+}
+BEGIN {
+	for (x = 0; x < 16; x++)
+		old[x] = x
+	for (x = 0; x < 6; x++)
+		new[x] = old[5 + x]
+	if (changed_span(old, new, 5, 6) != "none")
+		exit 1
+	new[2] = 99
+	if (changed_span(old, new, 5, 6) != "7:8")
+		exit 1
+	new[5] = 88
+	if (changed_span(old, new, 5, 6) != "7:11")
 		exit 1
 }
 ' /dev/null

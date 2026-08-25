@@ -7,6 +7,7 @@ source_file=$project_dir/src/sm750_drm.c
 
 for requirement in \
 	'module_param(disable_dma, bool, 0444);' \
+	'static unsigned int shadow_dma_min_bytes = 4096;' \
 	'dma_set_mask_and_coherent(&sdev->pdev->dev, DMA_BIT_MASK(31))' \
 	'dmam_alloc_coherent(&sdev->pdev->dev,' \
 	'readl_poll_timeout_atomic(sdev->regs + DMA_ABORT_INTERRUPT,' \

@@ -18,7 +18,7 @@ build-time defaults.
 | `double_shadow` | `0` | Snapshot source rows and trim reported damage to pixels that really changed. |
 | `disable_hardware_cursor` | `0` | Set to `1` to use a software-rendered cursor instead of the 64x64 hardware plane. |
 | `disable_dma` | `0` | Set to `1` to force CPU uploads. DMA already falls back permanently after verification failure or timeout. |
-| `shadow_dma_min_bytes` | `256` | Smallest aligned upload span sent through DMA1. Valid range is checked at probe. |
+| `shadow_dma_min_bytes` | `4096` | Smallest aligned upload span sent through DMA1. The one-RGB565-scanline default avoids DMA setup and polling overhead for small interactive updates. Valid range is checked at probe. |
 | `preferred_width` | `0` | Preferred exposed mode width; use with height and refresh. |
 | `preferred_height` | `0` | Preferred exposed mode height. |
 | `preferred_refresh` | `0` | Preferred integer refresh rate in hertz. |
