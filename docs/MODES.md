@@ -1,0 +1,60 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+# Modes and clocks
+
+## Mode policy
+
+| `edid_only` | `softscale_wide` | Exposed modes |
+|---:|---:|---|
+| `1` | `0` | Valid EDID modes only. |
+| `1` | `1` | EDID modes; wide modes stay hidden. If EDID lacks 1920x1080, inject only 50, 59.94 and 60 Hz. |
+| `0` | `0` | Driver VESA/CTA catalogue. EDID identity remains available but EDID does not restrict modes. |
+| `0` | `1` | Driver catalogue plus logical 2464x1080 and 2560x1080. |
+
+If EDID cannot be read or supplies no usable mode, the driver falls back to its
+standard catalogue so the connector remains usable.
+
+The catalogue generally offers 59.94, 60, 70, 72 and 75 Hz. It also includes
+50 Hz where defined. Higher refresh entries are selectively omitted when their
+clock exceeds the driver's current bound. 59.94 and 60 are retained separately
+because they are distinct standard rates and may interact differently with
+display adapters.
+
+## Ultrawide soft scaling
+
+Logical 2464x1080 and 2560x1080 are offered at 50, 59.94, 60, 70, 72 and 75 Hz.
+Both are filtered into a 2048x1080 physical scanout. The monitor never receives
+a 2464- or 2560-pixel-wide signal.
+
+| Refresh | Physical 2048x1080 pixel clock |
+|---:|---:|
+| 50 | 118.210 MHz |
+| 59.94 | 141.710 MHz |
+| 60 | 141.852 MHz |
+| 70 | 166.239 MHz |
+| 72 | 171.142 MHz |
+| 75 | 178.592 MHz |
+
+The 70, 72 and 75 Hz physical modes exceed the 165 MHz ceiling used by Linux's
+upstream SiI902x bridge driver. They worked on the development card and monitor,
+but that does not prove they are electrically safe or portable.
+
+## Physical catalogue limits
+
+- The primary graphics-plane width is limited to 2048 pixels by an 11-bit edge
+  coordinate. Vertical resolution does not trade for more horizontal bits.
+- 2048x1080 is available through 75 Hz, including out-of-spec high clocks.
+- 2048x1024 is limited to 72 Hz by the current catalogue.
+- 2048x1152 is limited to 59.94/60 Hz.
+- 1920x1080 is limited to 72 Hz; 75 Hz is deliberately omitted.
+- Some monitor-specific combinations can shimmer, blur, crop, skew or lose
+  signal even when their arithmetic is valid.
+
+## Risk and recovery
+
+An accepted mode can run the SM750 PLL, DVO path, SiI9024A, cable, adapter or
+monitor beyond a published or validated operating point. Symptoms include no
+signal, diagonal skew, coloured text edges, shimmer and display-manager restart.
+
+Keep SSH or another GPU available. To return to conservative EDID operation,
+remove experimental `sm750hdmidrm.*` arguments, run `sudo update-grub`, and
+reboot. The package does not install an automatic rollback service.

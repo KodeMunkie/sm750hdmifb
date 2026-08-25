@@ -1,0 +1,20 @@
+# Kernel build output
+*.ko
+*.mod
+*.mod.c
+*.o
+*.cmd
+.module-common.o
+Module.symvers
+modules.order
+
+# Local release and test output
+/build/
+/dist/
+/tests/check-vblank
+/tests/test-bbdither-rgb565
+
+# Editor and desktop files
+*~
+*.swp
+.directory

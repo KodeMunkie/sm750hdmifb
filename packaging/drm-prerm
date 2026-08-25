@@ -1,0 +1,27 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+set -e
+
+name=${DPKG_MAINTSCRIPT_PACKAGE:-sm750hdmifb}
+version=0.5.0
+
+restore_predecessor_file() {
+	path=$1
+	backup=${path}.disabled-by-sm750hdmifb
+	if [ -e "$backup" ]; then
+		rm -f "$path"
+		mv "$backup" "$path"
+	fi
+}
+
+if [ "$1" = remove ] || [ "$1" = deconfigure ]; then
+	rm -f /etc/X11/xorg.conf.d/20-sm750hdmidrm.conf
+	restore_predecessor_file /etc/X11/xorg.conf.d/20-sm750hdmifb-display.conf
+	restore_predecessor_file /etc/lightdm/lightdm.conf.d/99-sm750hdmifb.conf
+	restore_predecessor_file /usr/local/lib/xorg/modules/drivers/sm750shadow_drv.so
+	if command -v dkms >/dev/null 2>&1; then
+		dkms remove -m "$name" -v "$version" --all || true
+	fi
+fi
+
+exit 0

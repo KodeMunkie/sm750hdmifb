@@ -1,0 +1,20 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: sm750hdmifb
+Source: https://github.com/KodeMunkie/sm750hdmifb
+
+Files: src/ddk750*
+Copyright: 2007 Silicon Motion, Inc.
+           Linux kernel contributors
+           2026 Benjamin Brown
+License: GPL-2.0-only
+
+Files: *
+Copyright: 2026 Benjamin Brown
+           Linux kernel contributors
+License: GPL-2.0-only
+ This program is free software; you can redistribute it and/or modify it
+ under the terms of the GNU General Public License version 2 as published by
+ the Free Software Foundation.
+ .
+ On Debian systems, the complete GPL version 2 text is available at
+ /usr/share/common-licenses/GPL-2.

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0
+obj-m += sm750hdmidrm.o
+sm750hdmidrm-y := sm750_drm.o sm750_drm_mode.o sm750_dither.o ddk750_chip.o \
+	ddk750_mode.o ddk750_power.o ddk750_display.o ddk750_swi2c.o \
+	ddk750_hwi2c.o sii902x.o
+ifeq ($(SM750_DRM_SCANOUT_DEFAULT),xrgb8888)
+ccflags-y += -DSM750_DRM_DEFAULT_XRGB8888=1
+else ifeq ($(SM750_DRM_SCANOUT_DEFAULT),rgb565)
+ccflags-y += -DSM750_DRM_DEFAULT_RGB565=1
+endif
+ccflags-y += -DSM750_DRM_DEFAULT_EDID_ONLY=$(or $(SM750_DRM_DEFAULT_EDID_ONLY),1)
+ccflags-y += -DSM750_DRM_DEFAULT_SOFTSCALE_WIDE=$(or $(SM750_DRM_DEFAULT_SOFTSCALE_WIDE),0)
+ccflags-y += -DSM750_DRM_DEFAULT_SHARPEN=$(or $(SM750_DRM_DEFAULT_SHARPEN),0)
+ccflags-y += -DSM750_DRM_DEFAULT_DOUBLE_SHADOW=$(or $(SM750_DRM_DEFAULT_DOUBLE_SHADOW),0)
+ccflags-y += -DSM750_DRM_DEFAULT_DISABLE_HARDWARE_CURSOR=$(or $(SM750_DRM_DEFAULT_DISABLE_HARDWARE_CURSOR),0)
+ccflags-y += -DSM750_DRM_DEFAULT_DISABLE_DMA=$(or $(SM750_DRM_DEFAULT_DISABLE_DMA),0)

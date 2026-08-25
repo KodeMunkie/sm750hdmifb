@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0
+config DRM_SM750_HDMI
+	tristate "SM750G10 SiI9024A HDMI DRM support"
+	depends on DRM && PCI && HAS_IOPORT
+	select DRM_KMS_HELPER
+	select DRM_TTM_HELPER
+	select DRM_VRAM_HELPER
+	help
+	  Atomic DRM/KMS support for SM750G10 boards with an external
+	  SiI9024A HDMI transmitter connected through GPIO12 and GPIO13.
+
+	  The module is called sm750hdmidrm.
