@@ -66,7 +66,7 @@ for requirement in \
 	'"rgb565"' \
 	'DRM_GEM_SIMPLE_DISPLAY_PIPE_SHADOW_PLANE_FUNCS,' \
 	'drm_gem_fb_create_with_dirty' \
-	'drm_atomic_helper_damage_merged(old_plane_state, state, &damage)' \
+	'drm_atomic_for_each_plane_damage(&iter, &damage)' \
 	'drm_plane_enable_fb_damage_clips(&sdev->pipe.plane)' \
 		'PANEL_DISPLAY_CTRL_FORMAT_16' \
 		'sm750_xrgb8888_to_rgb565' \

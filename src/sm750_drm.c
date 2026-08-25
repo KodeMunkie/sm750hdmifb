@@ -223,6 +223,7 @@ struct sm750_drm_device {
 	dma_addr_t dma_staging_address;
 	u16 *dither_output_line;
 	u32 cursor_offset;
+	u32 cursor_encoded_width;
 	u32 dma_master_base;
 	u32 dma_source_address;
 	u32 shadow_source_width;
@@ -241,6 +242,7 @@ struct sm750_drm_device {
 	bool softscale_active;
 	bool shadow_source_snapshot_valid;
 	bool hardware_cursor;
+	bool cursor_image_valid;
 	bool shadow_dma_enabled;
 	bool shadow_dma_broken;
 };
@@ -1058,9 +1060,6 @@ static int sm750_dma_transfer(struct sm750_drm_device *sdev,
 	control &= ~(DMA_ABORT_INTERRUPT_ABORT_1 |
 		     DMA_ABORT_INTERRUPT_INT_1);
 	poke32(DMA_ABORT_INTERRUPT, control);
-	poke32(PCI_MASTER_BASE,
-		sdev->dma_master_base & PCI_MASTER_BASE_ADDRESS_MASK);
-	poke32(DMA_1_SOURCE, sdev->dma_source_address);
 	poke32(DMA_1_DESTINATION,
 		destination & DMA_1_DESTINATION_ADDRESS_MASK);
 	dma_wmb();
@@ -1130,6 +1129,10 @@ static int sm750_dma_init(struct sm750_drm_device *sdev)
 		(address & GENMASK_ULL(22, 2));
 	sm750_enable_dma(1);
 	sm750_dma_abort(sdev);
+	/* These identify the fixed coherent staging buffer for every transfer. */
+	poke32(PCI_MASTER_BASE,
+		sdev->dma_master_base & PCI_MASTER_BASE_ADDRESS_MASK);
+	poke32(DMA_1_SOURCE, sdev->dma_source_address);
 
 	test_destination = sdev->cursor_offset - SM750_DRM_DMA_TEST_SIZE -
 		SM750_DRM_DMA_GUARD_WORDS * sizeof(u32);
@@ -1224,6 +1227,7 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 			u32 *snapshot = double_shadow ?
 				sdev->shadow_source_snapshot +
 				(size_t)y * SM750_DRM_MAX_WIDTH : NULL;
+			const u32 *scale_source = sdev->dither_source_line;
 			unsigned int src_x1 = clamp_t(int, rect->x1, 0,
 					     sdev->softscale_source_width);
 			unsigned int src_x2 = clamp_t(int, rect->x2, 0,
@@ -1238,9 +1242,17 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 
 			if (src_x1 >= src_x2)
 				continue;
-			iosys_map_memcpy_from(sdev->dither_source_line, src,
-					      src_offset,
-					      sdev->softscale_source_width * sizeof(u32));
+			if (snapshot && sdev->shadow_source_snapshot_valid) {
+				iosys_map_memcpy_from(
+					sdev->dither_source_line + src_x1, src,
+					src_offset + (size_t)src_x1 * sizeof(u32),
+					(src_x2 - src_x1) * sizeof(u32));
+			} else {
+				iosys_map_memcpy_from(sdev->dither_source_line, src,
+						      src_offset,
+						      sdev->softscale_source_width *
+						      sizeof(u32));
+			}
 
 			changed_x1 = src_x1;
 			changed_x2 = src_x2;
@@ -1256,10 +1268,12 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 				       snapshot[changed_x2 - 1])
 					changed_x2--;
 			}
-			if (snapshot)
+			if (snapshot) {
 				memcpy(snapshot + changed_x1,
 				       sdev->dither_source_line + changed_x1,
 				       (changed_x2 - changed_x1) * sizeof(u32));
+				scale_source = snapshot;
+			}
 
 			dst_x1 = (u64)changed_x1 * 2048 /
 				sdev->softscale_source_width;
@@ -1288,7 +1302,7 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 				u32 *output = sdev->softscale_output_line;
 
 				sm750_scale_xrgb8888(sdev->softscale_output_line,
-					sdev->dither_source_line,
+					scale_source,
 					sdev->dither_scale_map,
 					sdev->softscale_source_width,
 					calc_x1, calc_x2);
@@ -1311,7 +1325,7 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 				u32 *output = sdev->softscale_output_line;
 
 				sm750_scale_xrgb8888(sdev->softscale_output_line,
-					sdev->dither_source_line,
+					scale_source,
 					sdev->dither_scale_map,
 					sdev->softscale_source_width,
 					calc_x1, calc_x2);
@@ -1329,7 +1343,7 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 				sm750_dither_scale_sharpen_xrgb8888_to_rgb565(
 					sdev->dither, sdev->dither_output_line,
 					sdev->softscale_output_line,
-					sdev->dither_source_line, y,
+					scale_source, y,
 					sdev->dither_scale_map,
 					sdev->softscale_source_width,
 					dst_x1, dst_x2,
@@ -1337,12 +1351,12 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 			else if (sdev->softscale_source_width == 2560)
 				sm750_dither_scale_5_to_4_xrgb8888_to_rgb565(
 					sdev->dither, sdev->dither_output_line,
-					sdev->dither_source_line, y,
+					scale_source, y,
 					dst_x1, dst_x2);
 			else
 				sm750_dither_scale_xrgb8888_to_rgb565(
 					sdev->dither, sdev->dither_output_line,
-					sdev->dither_source_line, y,
+					scale_source, y,
 					sdev->dither_scale_map, dst_x1, dst_x2);
 			sm750_shadow_upload(sdev,
 				dst_offset + dst_x1 * sizeof(u16),
@@ -1585,6 +1599,8 @@ static void sm750_cursor_atomic_update(struct drm_plane *plane,
 		container_of(plane, struct sm750_drm_device, cursor_plane);
 	struct drm_plane_state *state =
 		drm_atomic_get_new_plane_state(atomic_state, plane);
+	struct drm_plane_state *old_state =
+		drm_atomic_get_old_plane_state(atomic_state, plane);
 	struct drm_shadow_plane_state *shadow;
 	const struct iosys_map *source;
 	unsigned int source_x;
@@ -1594,6 +1610,7 @@ static void sm750_cursor_atomic_update(struct drm_plane *plane,
 	unsigned int output_width;
 	unsigned int y;
 	u16 palette[3];
+	bool rebuild_image;
 	int physical_x;
 	int physical_y;
 	u32 location = 0;
@@ -1617,13 +1634,6 @@ static void sm750_cursor_atomic_update(struct drm_plane *plane,
 		sm750_cursor_disable_locked(sdev);
 		goto unlock;
 	}
-	for (y = 0; y < source_height; y++) {
-		size_t offset = (size_t)(source_y + y) * state->fb->pitches[0] +
-			(size_t)source_x * sizeof(u32);
-
-		iosys_map_memcpy_from(sdev->cursor_source + y * source_width,
-				      source, offset, source_width * sizeof(u32));
-	}
 	output_width = source_width;
 	physical_x = state->dst.x1;
 	if (sdev->softscale_active) {
@@ -1642,13 +1652,32 @@ static void sm750_cursor_atomic_update(struct drm_plane *plane,
 		goto unlock;
 	}
 
-	sm750_cursor_palette(sdev, source_width, source_height, palette);
-	sm750_cursor_encode(sdev, source_width, source_height, output_width,
-			    palette);
-	memcpy_toio(sdev->vram + sdev->cursor_offset, sdev->cursor_image,
-		    SM750_DRM_CURSOR_SIZE);
-	poke32(SM750_DRM_HWC_COLOR_12, (u32)palette[1] << 16 | palette[0]);
-	poke32(SM750_DRM_HWC_COLOR_3, palette[2]);
+	rebuild_image = !sdev->cursor_image_valid || !old_state ||
+		!old_state->visible || state->fb != old_state->fb ||
+		!drm_rect_equals(&state->src, &old_state->src) ||
+		state->fb_damage_clips != old_state->fb_damage_clips ||
+		output_width != sdev->cursor_encoded_width;
+	if (rebuild_image) {
+		for (y = 0; y < source_height; y++) {
+			size_t offset = (size_t)(source_y + y) *
+				state->fb->pitches[0] +
+				(size_t)source_x * sizeof(u32);
+
+			iosys_map_memcpy_from(
+				sdev->cursor_source + y * source_width,
+				source, offset, source_width * sizeof(u32));
+		}
+		sm750_cursor_palette(sdev, source_width, source_height, palette);
+		sm750_cursor_encode(sdev, source_width, source_height, output_width,
+				    palette);
+		memcpy_toio(sdev->vram + sdev->cursor_offset, sdev->cursor_image,
+			    SM750_DRM_CURSOR_SIZE);
+		poke32(SM750_DRM_HWC_COLOR_12,
+			(u32)palette[1] << 16 | palette[0]);
+		poke32(SM750_DRM_HWC_COLOR_3, palette[2]);
+		sdev->cursor_encoded_width = output_width;
+		sdev->cursor_image_valid = true;
+	}
 	if (physical_x < 0) {
 		location |= SM750_DRM_HWC_LOCATION_LEFT;
 		physical_x = -physical_x;
@@ -1676,6 +1705,7 @@ static void sm750_cursor_atomic_disable(struct drm_plane *plane,
 
 	mutex_lock(&sdev->cursor_lock);
 	sm750_cursor_disable_locked(sdev);
+	sdev->cursor_image_valid = false;
 	mutex_unlock(&sdev->cursor_lock);
 }
 
@@ -1871,17 +1901,19 @@ fail:
 }
 
 static void sm750_pipe_update(struct drm_simple_display_pipe *pipe,
-			      struct drm_plane_state *old_plane_state)
+				      struct drm_plane_state *old_plane_state)
 {
 	struct sm750_drm_device *sdev = pipe_to_sm750(pipe);
 	struct drm_plane_state *state = pipe->plane.state;
+	struct drm_atomic_helper_damage_iter iter;
 	struct drm_rect damage;
 	u32 offset;
 
-	if (sdev->shadow_scanout &&
-	    drm_atomic_helper_damage_merged(old_plane_state, state, &damage)) {
-		sm750_shadow_rect(sdev, state, &damage);
-	} else if (!sdev->shadow_scanout && state->fb &&
+	if (sdev->shadow_scanout) {
+		drm_atomic_helper_damage_iter_init(&iter, old_plane_state, state);
+		drm_atomic_for_each_plane_damage(&iter, &damage)
+			sm750_shadow_rect(sdev, state, &damage);
+	} else if (state->fb &&
 		 !sm750_scanout_offset(state->fb, &offset))
 		poke32(SM750_DRM_FB_ADDRESS, SM750_DRM_FB_ADDRESS_STATUS |
 		       (offset & SM750_DRM_FB_ADDRESS_MASK));

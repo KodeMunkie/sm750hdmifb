@@ -30,6 +30,13 @@ for requirement in \
 	}
 done
 
+transfer_body=$(sed -n '/static int sm750_dma_transfer(/,/^}/p' "$source_file")
+if grep -F 'poke32(PCI_MASTER_BASE' <<<"$transfer_body" >/dev/null ||
+   grep -F 'poke32(DMA_1_SOURCE' <<<"$transfer_body" >/dev/null; then
+	echo "Invariant DMA source registers are still programmed per transfer" >&2
+	exit 1
+fi
+
 awk 'BEGIN {
 	for (x1 = 0; x1 < 2048; x1++) {
 		for (width = 1; width <= 16 && x1 + width <= 2048; width++) {

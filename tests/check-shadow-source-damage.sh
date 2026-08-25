@@ -15,6 +15,8 @@ for requirement in \
 	'sdev->dither_source_line[changed_x1] ==' \
 	'sdev->dither_source_line[changed_x2 - 1] ==' \
 	'memcpy(snapshot + changed_x1,' \
+	'sdev->dither_source_line + src_x1, src,' \
+	'scale_source = snapshot;' \
 	'src_x1 += changed_x1;' \
 	'sdev->dither_source_line + changed_x1,' \
 	'rect->x2 >= sdev->shadow_source_width' \
@@ -26,6 +28,22 @@ for requirement in \
 		exit 1
 	}
 done
+
+for requirement in \
+	'struct drm_atomic_helper_damage_iter iter;' \
+	'drm_atomic_helper_damage_iter_init(&iter, old_plane_state, state);' \
+	'drm_atomic_for_each_plane_damage(&iter, &damage)'; do
+	grep -F "$requirement" "$source_file" >/dev/null || {
+		echo "Missing individual damage-clip requirement: $requirement" >&2
+		exit 1
+	}
+done
+
+if grep -F 'drm_atomic_helper_damage_merged(old_plane_state' \
+	"$source_file" >/dev/null; then
+	echo "Damage clips are still being collapsed into a bounding box" >&2
+	exit 1
+fi
 
 awk '
 function changed_span(old, new, count, result, first, last, x) {

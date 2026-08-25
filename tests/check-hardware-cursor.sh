@@ -20,6 +20,12 @@ for requirement in \
 	'sm750_cursor_unpremultiply' \
 	'sm750_cursor_palette' \
 	'sm750_cursor_encode' \
+	'bool cursor_image_valid;' \
+	'bool rebuild_image;' \
+	'state->fb != old_state->fb' \
+	'state->fb_damage_clips != old_state->fb_damage_clips' \
+	'output_width != sdev->cursor_encoded_width' \
+	'if (rebuild_image) {' \
 	'value << ((x & 3) * 2)' \
 	'SM750_DRM_HWC_ADDRESS_ENABLE |' \
 	'64x64 hardware cursor plane enabled with ARGB palette conversion'; do
