@@ -94,6 +94,30 @@ static u32 sm750_scale_5_to_4_pixel(const u32 *src, unsigned int x)
 	return (red << 16) | (green << 8) | blue;
 }
 
+/* 2464:2048 reduces exactly to 77:64. */
+static u32 sm750_scale_77_to_64_pixel(const u32 *src, unsigned int x)
+{
+	unsigned int phase = (x * 13U) & 63U;
+	unsigned int source_x = (x * 77U) >> 6;
+	unsigned int weight0 = 64U - phase;
+	unsigned int weight1 = min(13U + phase, 64U);
+	unsigned int weight2 = phase > 51U ? phase - 51U : 0U;
+	u32 pixel0 = src[source_x];
+	u32 pixel1 = src[source_x + 1];
+	u32 pixel2 = weight2 ? src[source_x + 2] : 0;
+	unsigned int red = (((pixel0 >> 16) & 0xffU) * weight0 +
+		((pixel1 >> 16) & 0xffU) * weight1 +
+		((pixel2 >> 16) & 0xffU) * weight2 + 38U) / 77U;
+	unsigned int green = (((pixel0 >> 8) & 0xffU) * weight0 +
+		((pixel1 >> 8) & 0xffU) * weight1 +
+		((pixel2 >> 8) & 0xffU) * weight2 + 38U) / 77U;
+	unsigned int blue = ((pixel0 & 0xffU) * weight0 +
+		(pixel1 & 0xffU) * weight1 +
+		(pixel2 & 0xffU) * weight2 + 38U) / 77U;
+
+	return (red << 16) | (green << 8) | blue;
+}
+
 void sm750_dither_xrgb8888_to_rgb565(const struct sm750_dither *ctx,
 				     u16 *dst, size_t dst_stride,
 				     const u32 *src, size_t src_stride,
@@ -131,6 +155,23 @@ void sm750_dither_scale_5_to_4_xrgb8888_to_rgb565(
 
 	for (x = dst_x1; x < dst_x2; x++) {
 		u32 pixel = sm750_scale_5_to_4_pixel(src, x);
+
+		dst[x] = sm750_dither_pixel(ctx, pixel, matrix[x & 7U]);
+	}
+}
+
+void sm750_dither_scale_77_to_64_xrgb8888_to_rgb565(
+				     const struct sm750_dither *ctx,
+				     u16 *dst, const u32 *src,
+				     unsigned int y_origin,
+				     unsigned int dst_x1,
+				     unsigned int dst_x2)
+{
+	const u8 *matrix = &bbdither8[(y_origin & 7U) << 3];
+	unsigned int x;
+
+	for (x = dst_x1; x < dst_x2; x++) {
+		u32 pixel = sm750_scale_77_to_64_pixel(src, x);
 
 		dst[x] = sm750_dither_pixel(ctx, pixel, matrix[x & 7U]);
 	}
@@ -212,6 +253,8 @@ void sm750_scale_xrgb8888(u32 *dst, const u32 *src,
 	for (x = dst_x1; x < dst_x2; x++)
 		dst[x] = src_width == 2560 ?
 			sm750_scale_5_to_4_pixel(src, x) :
+			src_width == 2464 ?
+			sm750_scale_77_to_64_pixel(src, x) :
 			sm750_scale_map_pixel(src, map, x);
 }
 

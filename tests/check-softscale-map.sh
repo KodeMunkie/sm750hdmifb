@@ -18,6 +18,36 @@ awk 'BEGIN {
 		if (!coverage[x])
 			exit 1
 
+	# The fixed 77:64 scaler must exactly match the generic 2464:2048
+	# area weights after their common factor of 32 is removed.
+	for (x = 0; x < 2048; x++) {
+		start = x * 2464
+		end = (x + 1) * 2464
+		first = int(start / 2048)
+		phase = (x * 13) % 64
+		fixed_first = int(x * 77 / 64)
+		weight0 = 64 - phase
+		weight1 = 13 + phase
+		if (weight1 > 64)
+			weight1 = 64
+		weight2 = phase > 51 ? phase - 51 : 0
+		if (first != fixed_first || weight0 + weight1 + weight2 != 77)
+			exit 1
+		for (tap = 0; tap < 3; tap++) {
+			source_x = first + tap
+			left = source_x * 2048
+			if (start > left)
+				left = start
+			right = (source_x + 1) * 2048
+			if (end < right)
+				right = end
+			generic_weight = right > left ? (right - left) / 32 : 0
+			fixed_weight = tap == 0 ? weight0 : (tap == 1 ? weight1 : weight2)
+			if (generic_weight != fixed_weight)
+				exit 1
+		}
+	}
+
 	scale_widths[0] = 2464
 	for (width_index = 0; width_index < 1; width_index++) {
 		src_width = scale_widths[width_index]

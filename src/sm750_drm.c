@@ -1202,9 +1202,9 @@ static void sm750_dma_stop(void *data)
 	sdev->shadow_dma_enabled = false;
 }
 
-static void sm750_shadow_rect(struct sm750_drm_device *sdev,
-			      struct drm_plane_state *plane_state,
-			      const struct drm_rect *rect)
+static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
+				     struct drm_plane_state *plane_state,
+				     const struct drm_rect *rect)
 {
 	struct drm_shadow_plane_state *shadow =
 		to_drm_shadow_plane_state(plane_state);
@@ -1221,7 +1221,6 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 	if (y1 >= y2)
 		return;
 
-	mutex_lock(&sdev->shadow_lock);
 	for (y = y1; y < y2; y++) {
 		if (sdev->softscale_active) {
 			u32 *snapshot = double_shadow ?
@@ -1353,6 +1352,11 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 					sdev->dither, sdev->dither_output_line,
 					scale_source, y,
 					dst_x1, dst_x2);
+			else if (sdev->softscale_source_width == 2464)
+				sm750_dither_scale_77_to_64_xrgb8888_to_rgb565(
+					sdev->dither, sdev->dither_output_line,
+					scale_source, y,
+					dst_x1, dst_x2);
 			else
 				sm750_dither_scale_xrgb8888_to_rgb565(
 					sdev->dither, sdev->dither_output_line,
@@ -1426,6 +1430,14 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 	    rect->x2 >= sdev->shadow_source_width &&
 	    rect->y2 >= sdev->shadow_source_height)
 		sdev->shadow_source_snapshot_valid = true;
+}
+
+static void sm750_shadow_rect(struct sm750_drm_device *sdev,
+			      struct drm_plane_state *plane_state,
+			      const struct drm_rect *rect)
+{
+	mutex_lock(&sdev->shadow_lock);
+	sm750_shadow_rect_locked(sdev, plane_state, rect);
 	wmb();
 	mutex_unlock(&sdev->shadow_lock);
 }
@@ -1910,9 +1922,12 @@ static void sm750_pipe_update(struct drm_simple_display_pipe *pipe,
 	u32 offset;
 
 	if (sdev->shadow_scanout) {
+		mutex_lock(&sdev->shadow_lock);
 		drm_atomic_helper_damage_iter_init(&iter, old_plane_state, state);
 		drm_atomic_for_each_plane_damage(&iter, &damage)
-			sm750_shadow_rect(sdev, state, &damage);
+			sm750_shadow_rect_locked(sdev, state, &damage);
+		wmb();
+		mutex_unlock(&sdev->shadow_lock);
 	} else if (state->fb &&
 		 !sm750_scanout_offset(state->fb, &offset))
 		poke32(SM750_DRM_FB_ADDRESS, SM750_DRM_FB_ADDRESS_STATUS |
