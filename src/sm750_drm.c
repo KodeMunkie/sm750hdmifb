@@ -87,6 +87,7 @@
 #define SM750_DRM_DMA_TEST_SIZE 256
 #define SM750_DRM_DMA_TIMEOUT_US 2000
 #define SM750_DRM_DMA_GUARD_WORDS 4
+#define SM750_DRM_DAMAGE_SPLIT_GAP 64
 #define SM750_DRM_SHARPEN_PERCENT 8
 #define SM750_DRM_HWC_ADDRESS PANEL_HWC_ADDRESS
 #define SM750_DRM_HWC_ADDRESS_ENABLE PANEL_HWC_ADDRESS_ENABLE
@@ -1242,6 +1243,96 @@ static void sm750_dma_stop(void *data)
 	sdev->shadow_dma_enabled = false;
 }
 
+static void sm750_softscale_upload_span(struct sm750_drm_device *sdev,
+					const u32 *scale_source,
+					unsigned int y,
+					unsigned int src_x1,
+					unsigned int src_x2)
+{
+	unsigned int dst_x1;
+	unsigned int dst_x2;
+	size_t dst_offset = (size_t)y * sdev->scanout_pitch;
+
+	dst_x1 = (u64)src_x1 * 2048 / sdev->softscale_source_width;
+	dst_x2 = DIV_ROUND_UP_ULL((u64)src_x2 * 2048,
+				   sdev->softscale_source_width);
+	/* Sharpening also changes the immediate neighbours of scaled damage. */
+	if (sharpen) {
+		if (dst_x1)
+			dst_x1--;
+		if (dst_x2 < 2048)
+			dst_x2++;
+	}
+	if (sdev->shadow_dma_enabled && sdev->rgb565) {
+		dst_x1 &= ~1U;
+		dst_x2 = min(ALIGN(dst_x2, 2), 2048U);
+	}
+	if (dst_x1 >= dst_x2)
+		return;
+
+	if (!sdev->rgb565) {
+		unsigned int calc_x1 = sharpen && dst_x1 ? dst_x1 - 1 : dst_x1;
+		unsigned int calc_x2 = sharpen ? min(dst_x2 + 1, 2048U) : dst_x2;
+		u32 *output = sdev->softscale_output_line;
+
+		sm750_scale_xrgb8888(sdev->softscale_output_line, scale_source,
+			sdev->dither_scale_map, sdev->softscale_source_width,
+			calc_x1, calc_x2);
+		if (sharpen) {
+			sm750_sharpen_xrgb8888(sdev->xrgb_output_line,
+				sdev->softscale_output_line, dst_x1, dst_x2,
+				SM750_DRM_SHARPEN_PERCENT);
+			output = sdev->xrgb_output_line;
+		}
+		sm750_shadow_upload(sdev, dst_offset + dst_x1 * sizeof(u32),
+			output + dst_x1, (dst_x2 - dst_x1) * sizeof(u32));
+		return;
+	}
+
+	if (!sdev->bbdither) {
+		unsigned int calc_x1 = sharpen && dst_x1 ? dst_x1 - 1 : dst_x1;
+		unsigned int calc_x2 = sharpen ? min(dst_x2 + 1, 2048U) : dst_x2;
+		u32 *output = sdev->softscale_output_line;
+
+		sm750_scale_xrgb8888(sdev->softscale_output_line, scale_source,
+			sdev->dither_scale_map, sdev->softscale_source_width,
+			calc_x1, calc_x2);
+		if (sharpen) {
+			sm750_sharpen_xrgb8888(sdev->xrgb_output_line,
+				sdev->softscale_output_line, dst_x1, dst_x2,
+				SM750_DRM_SHARPEN_PERCENT);
+			output = sdev->xrgb_output_line;
+		}
+		sm750_xrgb8888_to_rgb565(sdev->dither_output_line + dst_x1,
+			output + dst_x1, dst_x2 - dst_x1);
+	} else if (sharpen) {
+		if (sdev->softscale_source_width == 2464)
+			sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(
+				sdev->dither, sdev->dither_output_line,
+				scale_source, y, dst_x1, dst_x2,
+				SM750_DRM_SHARPEN_PERCENT);
+		else
+			sm750_dither_scale_sharpen_xrgb8888_to_rgb565(
+				sdev->dither, sdev->dither_output_line,
+				sdev->softscale_output_line, scale_source, y,
+				sdev->dither_scale_map, sdev->softscale_source_width,
+				dst_x1, dst_x2, SM750_DRM_SHARPEN_PERCENT);
+	} else if (sdev->softscale_source_width == 2560) {
+		sm750_dither_scale_5_to_4_xrgb8888_to_rgb565(sdev->dither,
+			sdev->dither_output_line, scale_source, y, dst_x1, dst_x2);
+	} else if (sdev->softscale_source_width == 2464) {
+		sm750_dither_scale_77_to_64_xrgb8888_to_rgb565(sdev->dither,
+			sdev->dither_output_line, scale_source, y, dst_x1, dst_x2);
+	} else {
+		sm750_dither_scale_xrgb8888_to_rgb565(sdev->dither,
+			sdev->dither_output_line, scale_source, y,
+			sdev->dither_scale_map, dst_x1, dst_x2);
+	}
+	sm750_shadow_upload(sdev, dst_offset + dst_x1 * sizeof(u16),
+		sdev->dither_output_line + dst_x1,
+		(dst_x2 - dst_x1) * sizeof(u16));
+}
+
 static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
 				     struct drm_plane_state *plane_state,
 				     const struct drm_rect *rect)
@@ -1266,155 +1357,76 @@ static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
 			u32 *snapshot = double_shadow ?
 				sdev->shadow_source_snapshot +
 				(size_t)y * SM750_DRM_MAX_WIDTH : NULL;
-			const u32 *scale_source = sdev->dither_source_line;
+			const u32 *source_row;
 			unsigned int src_x1 = clamp_t(int, rect->x1, 0,
 					     sdev->softscale_source_width);
 			unsigned int src_x2 = clamp_t(int, rect->x2, 0,
 					     sdev->softscale_source_width);
-			unsigned int changed_x1;
-			unsigned int changed_x2;
-			unsigned int dst_x1;
-			unsigned int dst_x2;
+			unsigned int x;
 			size_t src_offset =
 				(size_t)y * plane_state->fb->pitches[0];
-			size_t dst_offset = (size_t)y * sdev->scanout_pitch;
 
 			if (src_x1 >= src_x2)
 				continue;
-			if (snapshot && sdev->shadow_source_snapshot_valid) {
+			if (!src->is_iomem) {
+				source_row = (const u32 *)((const u8 *)src->vaddr +
+							 src_offset);
+			} else if (snapshot && sdev->shadow_source_snapshot_valid) {
 				iosys_map_memcpy_from(
 					sdev->dither_source_line + src_x1, src,
 					src_offset + (size_t)src_x1 * sizeof(u32),
 					(src_x2 - src_x1) * sizeof(u32));
+				source_row = sdev->dither_source_line;
 			} else {
 				iosys_map_memcpy_from(sdev->dither_source_line, src,
 						      src_offset,
 						      sdev->softscale_source_width *
 						      sizeof(u32));
+				source_row = sdev->dither_source_line;
 			}
 
-			changed_x1 = src_x1;
-			changed_x2 = src_x2;
-			if (snapshot && sdev->shadow_source_snapshot_valid) {
-				while (changed_x1 < changed_x2 &&
-				       sdev->dither_source_line[changed_x1] ==
-				       snapshot[changed_x1])
-					changed_x1++;
-				if (changed_x1 == changed_x2)
-					continue;
-				while (changed_x2 > changed_x1 &&
-				       sdev->dither_source_line[changed_x2 - 1] ==
-				       snapshot[changed_x2 - 1])
-					changed_x2--;
-			}
-			if (snapshot) {
-				memcpy(snapshot + changed_x1,
-				       sdev->dither_source_line + changed_x1,
-				       (changed_x2 - changed_x1) * sizeof(u32));
-				scale_source = snapshot;
-			}
-
-			dst_x1 = (u64)changed_x1 * 2048 /
-				sdev->softscale_source_width;
-			dst_x2 = DIV_ROUND_UP_ULL((u64)changed_x2 * 2048,
-						   sdev->softscale_source_width);
-			/* Include output pixels whose scale filter touches the change. */
-			if (dst_x1)
-				dst_x1--;
-			if (dst_x2 < 2048)
-				dst_x2++;
-			if (sharpen) {
-				if (dst_x1)
-					dst_x1--;
-				if (dst_x2 < 2048)
-					dst_x2++;
-			}
-			if (sdev->shadow_dma_enabled && sdev->rgb565) {
-				dst_x1 &= ~1U;
-				dst_x2 = min(ALIGN(dst_x2, 2), 2048U);
-			}
-			if (dst_x1 >= dst_x2)
-				continue;
-			if (!sdev->rgb565) {
-				unsigned int calc_x1 = dst_x1 ? dst_x1 - 1 : 0;
-				unsigned int calc_x2 = min(dst_x2 + 1, 2048U);
-				u32 *output = sdev->softscale_output_line;
-
-				sm750_scale_xrgb8888(sdev->softscale_output_line,
-					scale_source,
-					sdev->dither_scale_map,
-					sdev->softscale_source_width,
-					calc_x1, calc_x2);
-				if (sharpen) {
-					sm750_sharpen_xrgb8888(sdev->xrgb_output_line,
-						sdev->softscale_output_line,
-						dst_x1, dst_x2,
-						SM750_DRM_SHARPEN_PERCENT);
-					output = sdev->xrgb_output_line;
-				}
-				sm750_shadow_upload(sdev,
-					dst_offset + dst_x1 * sizeof(u32),
-					output + dst_x1,
-					(dst_x2 - dst_x1) * sizeof(u32));
+			if (!snapshot) {
+				sm750_softscale_upload_span(sdev, source_row, y,
+							 src_x1, src_x2);
 				continue;
 			}
-			if (!sdev->bbdither) {
-				unsigned int calc_x1 = dst_x1 ? dst_x1 - 1 : 0;
-				unsigned int calc_x2 = min(dst_x2 + 1, 2048U);
-				u32 *output = sdev->softscale_output_line;
-
-				sm750_scale_xrgb8888(sdev->softscale_output_line,
-					scale_source,
-					sdev->dither_scale_map,
-					sdev->softscale_source_width,
-					calc_x1, calc_x2);
-				if (sharpen) {
-					sm750_sharpen_xrgb8888(sdev->xrgb_output_line,
-						sdev->softscale_output_line,
-						dst_x1, dst_x2,
-						SM750_DRM_SHARPEN_PERCENT);
-					output = sdev->xrgb_output_line;
-				}
-				sm750_xrgb8888_to_rgb565(
-					sdev->dither_output_line + dst_x1,
-					output + dst_x1, dst_x2 - dst_x1);
-			} else if (sharpen) {
-				if (sdev->softscale_source_width == 2464)
-					sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(
-						sdev->dither,
-						sdev->dither_output_line,
-						scale_source, y, dst_x1, dst_x2,
-						SM750_DRM_SHARPEN_PERCENT);
-				else
-					sm750_dither_scale_sharpen_xrgb8888_to_rgb565(
-						sdev->dither,
-						sdev->dither_output_line,
-						sdev->softscale_output_line,
-						scale_source, y,
-						sdev->dither_scale_map,
-						sdev->softscale_source_width,
-						dst_x1, dst_x2,
-						SM750_DRM_SHARPEN_PERCENT);
+			if (!sdev->shadow_source_snapshot_valid) {
+				memcpy(snapshot, source_row,
+				       sdev->softscale_source_width * sizeof(u32));
+				sm750_softscale_upload_span(sdev, snapshot, y,
+							 src_x1, src_x2);
+				continue;
 			}
-			else if (sdev->softscale_source_width == 2560)
-				sm750_dither_scale_5_to_4_xrgb8888_to_rgb565(
-					sdev->dither, sdev->dither_output_line,
-					scale_source, y,
-					dst_x1, dst_x2);
-			else if (sdev->softscale_source_width == 2464)
-				sm750_dither_scale_77_to_64_xrgb8888_to_rgb565(
-					sdev->dither, sdev->dither_output_line,
-					scale_source, y,
-					dst_x1, dst_x2);
-			else
-				sm750_dither_scale_xrgb8888_to_rgb565(
-					sdev->dither, sdev->dither_output_line,
-					scale_source, y,
-					sdev->dither_scale_map, dst_x1, dst_x2);
-			sm750_shadow_upload(sdev,
-				dst_offset + dst_x1 * sizeof(u16),
-				sdev->dither_output_line + dst_x1,
-				(dst_x2 - dst_x1) * sizeof(u16));
+			if (!memcmp(source_row + src_x1, snapshot + src_x1,
+				    (src_x2 - src_x1) * sizeof(u32)))
+				continue;
+
+			x = src_x1;
+			while (x < src_x2) {
+				unsigned int run_x1;
+				unsigned int last_changed;
+
+				while (x < src_x2 && source_row[x] == snapshot[x])
+					x++;
+				if (x == src_x2)
+					break;
+				run_x1 = x;
+				last_changed = x++;
+				while (x < src_x2) {
+					if (source_row[x] != snapshot[x]) {
+						last_changed = x++;
+						continue;
+					}
+					if (x - last_changed >=
+					    SM750_DRM_DAMAGE_SPLIT_GAP)
+						break;
+					x++;
+				}
+				memcpy(snapshot + run_x1, source_row + run_x1,
+				       (last_changed + 1 - run_x1) * sizeof(u32));
+				sm750_softscale_upload_span(sdev, snapshot, y,
+						run_x1, last_changed + 1);
+			}
 			continue;
 		}
 		unsigned int src_x1 = clamp_t(int, rect->x1, 0,

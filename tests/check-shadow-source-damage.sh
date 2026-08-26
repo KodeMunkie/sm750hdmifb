@@ -12,13 +12,15 @@ for requirement in \
 	'module_param(double_shadow, bool, 0444);' \
 	'return drm_gem_plane_helper_prepare_fb(&pipe->plane, plane_state);' \
 	'.prepare_fb = sm750_shadow_pipe_prepare_fb,' \
-	'sdev->dither_source_line[changed_x1] ==' \
-	'sdev->dither_source_line[changed_x2 - 1] ==' \
-	'memcpy(snapshot + changed_x1,' \
-	'sdev->dither_source_line + src_x1, src,' \
-	'scale_source = snapshot;' \
-	'src_x1 += changed_x1;' \
-	'sdev->dither_source_line + changed_x1,' \
+	'#define SM750_DRM_DAMAGE_SPLIT_GAP 64' \
+	'if (!src->is_iomem) {' \
+	'source_row = (const u32 *)((const u8 *)src->vaddr +' \
+	'if (!memcmp(source_row + src_x1, snapshot + src_x1,' \
+	'while (x < src_x2 && source_row[x] == snapshot[x])' \
+	'if (x - last_changed >=' \
+	'SM750_DRM_DAMAGE_SPLIT_GAP)' \
+	'memcpy(snapshot + run_x1, source_row + run_x1,' \
+	'sm750_softscale_upload_span(sdev, snapshot, y,' \
 	'rect->x2 >= sdev->shadow_source_width' \
 	'sdev->shadow_source_snapshot_valid = false;' \
 	'sdev->shadow_source_snapshot_valid = true;' \
@@ -46,33 +48,46 @@ if grep -F 'drm_atomic_helper_damage_merged(old_plane_state' \
 fi
 
 awk '
-function changed_span(old, new, count, result, first, last, x) {
-	first = 0
-	while (first < count && old[first] == new[first])
-		first++
-	if (first == count)
-		return "none"
-	last = count
-	while (last > first && old[last - 1] == new[last - 1])
-		last--
-	return first ":" last
+function damage_runs(old, new, start, end, gap, result, x, run_start, last_changed) {
+	result = ""
+	x = start
+	while (x < end) {
+		while (x < end && old[x] == new[x])
+			x++
+		if (x == end)
+			break
+		run_start = x
+		last_changed = x++
+		while (x < end) {
+			if (old[x] != new[x]) {
+				last_changed = x++
+				continue
+			}
+			if (x - last_changed >= gap)
+				break
+			x++
+		}
+		result = result (result == "" ? "" : ",") run_start ":" last_changed + 1
+	}
+	return result == "" ? "none" : result
 }
 BEGIN {
-	for (x = 0; x < 8; x++) {
+	for (x = 0; x < 24; x++) {
 		old[x] = x
 		new[x] = x
 	}
-	if (changed_span(old, new, 8) != "none")
+	if (damage_runs(old, new, 0, 24, 4) != "none")
 		exit 1
-	new[3] = 99
-	if (changed_span(old, new, 8) != "3:4")
+	new[2] = 99
+	new[5] = 88
+	if (damage_runs(old, new, 0, 24, 4) != "2:6")
 		exit 1
-	new[6] = 88
-	if (changed_span(old, new, 8) != "3:7")
+	new[16] = 77
+	new[17] = 66
+	if (damage_runs(old, new, 0, 24, 4) != "2:6,16:18")
 		exit 1
-	new[0] = 77
-	new[7] = 66
-	if (changed_span(old, new, 8) != "0:8")
+	new[8] = 55
+	if (damage_runs(old, new, 0, 24, 4) != "2:9,16:18")
 		exit 1
 }
 ' /dev/null
