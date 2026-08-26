@@ -11,7 +11,7 @@ for requirement in \
 	'dma_set_mask_and_coherent(&sdev->pdev->dev, DMA_BIT_MASK(31))' \
 	'dmam_alloc_coherent(&sdev->pdev->dev,' \
 	'#define SM750_DRM_DMA_BATCH_ROW_SIZE (2048 * sizeof(u16))' \
-	'#define SM750_DRM_DMA_BATCH_ROWS 8' \
+	'#define SM750_DRM_DMA_BATCH_ROWS 16' \
 	'(SM750_DRM_DMA_BATCH_ROWS * SM750_DRM_DMA_BATCH_ROW_SIZE)' \
 	'size_t dma_pending_size;' \
 	'destination == sdev->dma_pending_destination +' \
@@ -63,14 +63,14 @@ awk 'BEGIN {
 }' /dev/null
 
 awk 'BEGIN {
-	rows = 8
+	rows = 16
 	row = 4096
 	staging = rows * row
 	pending_destination = 0
 	pending_size = row
 	next_destination = pending_destination + pending_size
 	if (row != 4096 || next_destination != 4096 ||
-	    staging != 32768 || pending_size + row > staging)
+	    staging != 65536 || pending_size + row > staging)
 		exit 1
 	for (batch_row = 1; batch_row < rows; batch_row++) {
 		if (next_destination != pending_destination + pending_size)
