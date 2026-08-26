@@ -288,6 +288,46 @@ static u8 sm750_sharpen_channel(unsigned int left, unsigned int center,
 	return clamp_t(int, (int)center + adjustment, 0, 255);
 }
 
+void sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(
+				     const struct sm750_dither *ctx,
+				     u16 *dst, const u32 *src,
+				     unsigned int y_origin,
+				     unsigned int dst_x1,
+				     unsigned int dst_x2,
+				     unsigned int sharpen_percent)
+{
+	const u8 *matrix = &bbdither8[(y_origin & 7U) << 3];
+	u32 left;
+	u32 center;
+	u32 right;
+	unsigned int x;
+
+	if (dst_x1 >= dst_x2)
+		return;
+	center = sm750_scale_77_to_64_pixel(src, dst_x1);
+	left = dst_x1 ? sm750_scale_77_to_64_pixel(src, dst_x1 - 1) : center;
+	right = dst_x1 + 1 < SM750_DITHER_SCALE_MAX_SAMPLES ?
+		sm750_scale_77_to_64_pixel(src, dst_x1 + 1) : center;
+
+	for (x = dst_x1; x < dst_x2; x++) {
+		u32 pixel =
+			sm750_sharpen_channel((left >> 16) & 0xffU,
+				(center >> 16) & 0xffU, (right >> 16) & 0xffU,
+				sharpen_percent) << 16 |
+			sm750_sharpen_channel((left >> 8) & 0xffU,
+				(center >> 8) & 0xffU, (right >> 8) & 0xffU,
+				sharpen_percent) << 8 |
+			sm750_sharpen_channel(left & 0xffU, center & 0xffU,
+				right & 0xffU, sharpen_percent);
+
+		dst[x] = sm750_dither_pixel(ctx, pixel, matrix[x & 7U]);
+		left = center;
+		center = right;
+		right = x + 2 < SM750_DITHER_SCALE_MAX_SAMPLES ?
+			sm750_scale_77_to_64_pixel(src, x + 2) : center;
+	}
+}
+
 void sm750_sharpen_xrgb8888(u32 *dst, const u32 *src,
 			   unsigned int dst_x1,
 			   unsigned int dst_x2,

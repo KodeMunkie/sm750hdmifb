@@ -1338,15 +1338,24 @@ static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
 				sm750_xrgb8888_to_rgb565(
 					sdev->dither_output_line + dst_x1,
 					output + dst_x1, dst_x2 - dst_x1);
-			} else if (sharpen)
-				sm750_dither_scale_sharpen_xrgb8888_to_rgb565(
-					sdev->dither, sdev->dither_output_line,
-					sdev->softscale_output_line,
-					scale_source, y,
-					sdev->dither_scale_map,
-					sdev->softscale_source_width,
-					dst_x1, dst_x2,
-					SM750_DRM_SHARPEN_PERCENT);
+			} else if (sharpen) {
+				if (sdev->softscale_source_width == 2464)
+					sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(
+						sdev->dither,
+						sdev->dither_output_line,
+						scale_source, y, dst_x1, dst_x2,
+						SM750_DRM_SHARPEN_PERCENT);
+				else
+					sm750_dither_scale_sharpen_xrgb8888_to_rgb565(
+						sdev->dither,
+						sdev->dither_output_line,
+						sdev->softscale_output_line,
+						scale_source, y,
+						sdev->dither_scale_map,
+						sdev->softscale_source_width,
+						dst_x1, dst_x2,
+						SM750_DRM_SHARPEN_PERCENT);
+			}
 			else if (sdev->softscale_source_width == 2560)
 				sm750_dither_scale_5_to_4_xrgb8888_to_rgb565(
 					sdev->dither, sdev->dither_output_line,
