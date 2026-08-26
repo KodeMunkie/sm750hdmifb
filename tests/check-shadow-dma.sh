@@ -10,6 +10,12 @@ for requirement in \
 	'static unsigned int shadow_dma_min_bytes = 4096;' \
 	'dma_set_mask_and_coherent(&sdev->pdev->dev, DMA_BIT_MASK(31))' \
 	'dmam_alloc_coherent(&sdev->pdev->dev,' \
+	'#define SM750_DRM_DMA_BATCH_ROW_SIZE (SM750_DRM_DMA_STAGING_SIZE / 2)' \
+	'size_t dma_pending_size;' \
+	'destination == sdev->dma_pending_destination +' \
+	'sdev->dma_pending_size + size <= SM750_DRM_DMA_STAGING_SIZE' \
+	'if (size == SM750_DRM_DMA_BATCH_ROW_SIZE)' \
+	'sm750_dma_flush_pending(sdev);' \
 	'readl_poll_timeout_atomic(sdev->regs + DMA_ABORT_INTERRUPT,' \
 	'control, control & DMA_ABORT_INTERRUPT_INT_1, 1,' \
 	'control & ~DMA_ABORT_INTERRUPT_INT_1);' \
@@ -52,6 +58,17 @@ awk 'BEGIN {
 				exit 1
 		}
 	}
+}' /dev/null
+
+awk 'BEGIN {
+	staging = 8192
+	row = staging / 2
+	pending_destination = 0
+	pending_size = row
+	next_destination = pending_destination + pending_size
+	if (row != 4096 || next_destination != 4096 ||
+	    pending_size + row != staging)
+		exit 1
 }' /dev/null
 
 echo "Shadow DMA safety checks passed"

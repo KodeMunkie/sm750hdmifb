@@ -83,6 +83,7 @@
 #define SM750_DRM_CURSOR_SIZE \
 	(SM750_DRM_CURSOR_STRIDE * SM750_DRM_CURSOR_HEIGHT)
 #define SM750_DRM_DMA_STAGING_SIZE (2048 * sizeof(u32))
+#define SM750_DRM_DMA_BATCH_ROW_SIZE (SM750_DRM_DMA_STAGING_SIZE / 2)
 #define SM750_DRM_DMA_TEST_SIZE 256
 #define SM750_DRM_DMA_TIMEOUT_US 2000
 #define SM750_DRM_DMA_GUARD_WORDS 4
@@ -226,6 +227,8 @@ struct sm750_drm_device {
 	u32 cursor_encoded_width;
 	u32 dma_master_base;
 	u32 dma_source_address;
+	u32 dma_pending_destination;
+	size_t dma_pending_size;
 	u32 shadow_source_width;
 	u32 shadow_source_height;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
@@ -1086,17 +1089,53 @@ static int sm750_dma_transfer(struct sm750_drm_device *sdev,
 	return ret;
 }
 
+static void sm750_dma_flush_pending(struct sm750_drm_device *sdev)
+{
+	if (!sdev->dma_pending_size)
+		return;
+	if (!sdev->shadow_dma_enabled ||
+	    sm750_dma_transfer(sdev, sdev->dma_pending_destination,
+			       sdev->dma_pending_size))
+		memcpy_toio(sdev->vram + sdev->dma_pending_destination,
+			    sdev->dma_staging, sdev->dma_pending_size);
+	sdev->dma_pending_size = 0;
+}
+
 static void sm750_shadow_upload(struct sm750_drm_device *sdev,
 				u32 destination, const void *source,
 				size_t size)
 {
-	if (sdev->shadow_dma_enabled && size >= shadow_dma_min_bytes &&
-	    IS_ALIGNED(destination, sizeof(u32)) &&
-	    IS_ALIGNED(size, sizeof(u32))) {
+	bool dma_eligible = sdev->shadow_dma_enabled &&
+		size >= shadow_dma_min_bytes &&
+		IS_ALIGNED(destination, sizeof(u32)) &&
+		IS_ALIGNED(size, sizeof(u32));
+
+	if (dma_eligible && sdev->dma_pending_size) {
+		if (destination == sdev->dma_pending_destination +
+				sdev->dma_pending_size &&
+		    sdev->dma_pending_size + size <= SM750_DRM_DMA_STAGING_SIZE) {
+			memcpy((u8 *)sdev->dma_staging + sdev->dma_pending_size,
+			       source, size);
+			sdev->dma_pending_size += size;
+			if (sdev->dma_pending_size == SM750_DRM_DMA_STAGING_SIZE)
+				sm750_dma_flush_pending(sdev);
+			return;
+		}
+		sm750_dma_flush_pending(sdev);
+		dma_eligible = sdev->shadow_dma_enabled;
+	}
+
+	if (dma_eligible) {
 		memcpy(sdev->dma_staging, source, size);
+		if (size == SM750_DRM_DMA_BATCH_ROW_SIZE) {
+			sdev->dma_pending_destination = destination;
+			sdev->dma_pending_size = size;
+			return;
+		}
 		if (!sm750_dma_transfer(sdev, destination, size))
 			return;
 	}
+	sm750_dma_flush_pending(sdev);
 	memcpy_toio(sdev->vram + destination, source, size);
 }
 
@@ -1197,6 +1236,7 @@ static void sm750_dma_stop(void *data)
 {
 	struct sm750_drm_device *sdev = data;
 
+	sdev->dma_pending_size = 0;
 	sm750_dma_abort(sdev);
 	sm750_enable_dma(0);
 	sdev->shadow_dma_enabled = false;
@@ -1447,6 +1487,7 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 {
 	mutex_lock(&sdev->shadow_lock);
 	sm750_shadow_rect_locked(sdev, plane_state, rect);
+	sm750_dma_flush_pending(sdev);
 	wmb();
 	mutex_unlock(&sdev->shadow_lock);
 }
@@ -1935,6 +1976,7 @@ static void sm750_pipe_update(struct drm_simple_display_pipe *pipe,
 		drm_atomic_helper_damage_iter_init(&iter, old_plane_state, state);
 		drm_atomic_for_each_plane_damage(&iter, &damage)
 			sm750_shadow_rect_locked(sdev, state, &damage);
+		sm750_dma_flush_pending(sdev);
 		wmb();
 		mutex_unlock(&sdev->shadow_lock);
 	} else if (state->fb &&
