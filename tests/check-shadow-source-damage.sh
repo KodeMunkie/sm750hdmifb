@@ -15,12 +15,14 @@ for requirement in \
 	'#define SM750_DRM_DAMAGE_SPLIT_GAP 64' \
 	'if (!src->is_iomem) {' \
 	'source_row = (const u32 *)((const u8 *)src->vaddr +' \
-	'if (!memcmp(source_row + src_x1, snapshot + src_x1,' \
-	'while (x < src_x2 && source_row[x] == snapshot[x])' \
-	'if (x - last_changed >=' \
-	'SM750_DRM_DAMAGE_SPLIT_GAP)' \
+	'sm750_next_changed_u32_run(source_row, snapshot,' \
+	'sm750_next_changed_u16_run(source, snapshot, count,' \
+	'(block_end - x) * sizeof(*source)' \
 	'memcpy(snapshot + run_x1, source_row + run_x1,' \
 	'sm750_softscale_upload_span(sdev, snapshot, y,' \
+	'u16 *rgb565_scanout_snapshot;' \
+	'sm750_upload_rgb565_span(sdev,' \
+	'bool rgb565_scanout_snapshot_valid;' \
 	'rect->x2 >= sdev->shadow_source_width' \
 	'sdev->shadow_source_snapshot_valid = false;' \
 	'sdev->shadow_source_snapshot_valid = true;' \
@@ -71,6 +73,50 @@ function damage_runs(old, new, start, end, gap, result, x, run_start, last_chang
 	}
 	return result == "" ? "none" : result
 }
+function chunk_runs(old, new, start, end, gap, result, x, block_end,
+		run_start, last_changed, first_changed, candidate) {
+	result = ""
+	x = start
+	while (x < end) {
+		while (x < end) {
+			block_end = x + gap < end ? x + gap : end
+			for (candidate = x; candidate < block_end; candidate++)
+				if (old[candidate] != new[candidate])
+					break
+			if (candidate < block_end) {
+				x = candidate
+				break
+			}
+			x = block_end
+		}
+		if (x == end)
+			break
+		run_start = x
+		last_changed = x++
+		while (x < end) {
+			block_end = x + gap < end ? x + gap : end
+			first_changed = x
+			while (first_changed < block_end && old[first_changed] == new[first_changed])
+				first_changed++
+			if (first_changed == block_end) {
+				if (block_end - last_changed > gap)
+					break
+				x = block_end
+				continue
+			}
+			if (first_changed - last_changed > gap)
+				break
+			candidate = block_end - 1
+			while (old[candidate] == new[candidate])
+				candidate--
+			last_changed = candidate
+			x = block_end
+		}
+		result = result (result == "" ? "" : ",") run_start ":" last_changed + 1
+		x = last_changed + 1
+	}
+	return result == "" ? "none" : result
+}
 BEGIN {
 	for (x = 0; x < 24; x++) {
 		old[x] = x
@@ -89,6 +135,19 @@ BEGIN {
 	new[8] = 55
 	if (damage_runs(old, new, 0, 24, 4) != "2:9,16:18")
 		exit 1
+	if (chunk_runs(old, new, 0, 24, 4) != damage_runs(old, new, 0, 24, 4))
+		exit 1
+	srand(750)
+	for (test = 0; test < 500; test++) {
+		for (x = 0; x < 257; x++) {
+			old[x] = int(rand() * 65536)
+			new[x] = old[x]
+			if (rand() < 0.12)
+				new[x] = int(rand() * 65536)
+		}
+		if (chunk_runs(old, new, 0, 257, 64) != damage_runs(old, new, 0, 257, 64))
+			exit 1
+	}
 }
 ' /dev/null
 

@@ -224,6 +224,7 @@ struct sm750_drm_device {
 	struct sm750_dither_scale_map *dither_scale_map;
 	u32 *dither_source_line;
 	u32 *shadow_source_snapshot;
+	u16 *rgb565_scanout_snapshot;
 	u32 *softscale_output_line;
 	u32 *xrgb_output_line;
 	u32 *cursor_source;
@@ -259,6 +260,7 @@ struct sm750_drm_device {
 	bool bbdither;
 	bool softscale_active;
 	bool shadow_source_snapshot_valid;
+	bool rgb565_scanout_snapshot_valid;
 	bool hardware_cursor;
 	bool cursor_image_valid;
 	bool shadow_dma_enabled;
@@ -1453,6 +1455,158 @@ static void sm750_dma_stop(void *data)
 	sdev->shadow_dma_enabled = false;
 }
 
+static bool sm750_next_changed_u32_run(const u32 *source, const u32 *snapshot,
+				       unsigned int end,
+				       unsigned int *cursor,
+				       unsigned int *run_x1,
+				       unsigned int *run_x2)
+{
+	unsigned int x = *cursor;
+	unsigned int last_changed;
+
+	while (x < end) {
+		unsigned int block_end = min(x + SM750_DRM_DAMAGE_SPLIT_GAP, end);
+
+		if (!memcmp(source + x, snapshot + x,
+			    (block_end - x) * sizeof(*source))) {
+			x = block_end;
+			continue;
+		}
+		while (source[x] == snapshot[x])
+			x++;
+		break;
+	}
+	if (x == end) {
+		*cursor = end;
+		return false;
+	}
+
+	*run_x1 = x;
+	last_changed = x++;
+	while (x < end) {
+		unsigned int block_end = min(x + SM750_DRM_DAMAGE_SPLIT_GAP, end);
+		unsigned int first_changed;
+		unsigned int candidate;
+
+		if (!memcmp(source + x, snapshot + x,
+			    (block_end - x) * sizeof(*source))) {
+			if (block_end - last_changed > SM750_DRM_DAMAGE_SPLIT_GAP)
+				break;
+			x = block_end;
+			continue;
+		}
+		first_changed = x;
+		while (source[first_changed] == snapshot[first_changed])
+			first_changed++;
+		if (first_changed - last_changed > SM750_DRM_DAMAGE_SPLIT_GAP)
+			break;
+		candidate = block_end;
+		do {
+			candidate--;
+		} while (source[candidate] == snapshot[candidate]);
+		last_changed = candidate;
+		x = block_end;
+	}
+
+	*run_x2 = last_changed + 1;
+	*cursor = *run_x2;
+	return true;
+}
+
+static bool sm750_next_changed_u16_run(const u16 *source, const u16 *snapshot,
+				       unsigned int end,
+				       unsigned int *cursor,
+				       unsigned int *run_x1,
+				       unsigned int *run_x2)
+{
+	unsigned int x = *cursor;
+	unsigned int last_changed;
+
+	while (x < end) {
+		unsigned int block_end = min(x + SM750_DRM_DAMAGE_SPLIT_GAP, end);
+
+		if (!memcmp(source + x, snapshot + x,
+			    (block_end - x) * sizeof(*source))) {
+			x = block_end;
+			continue;
+		}
+		while (source[x] == snapshot[x])
+			x++;
+		break;
+	}
+	if (x == end) {
+		*cursor = end;
+		return false;
+	}
+
+	*run_x1 = x;
+	last_changed = x++;
+	while (x < end) {
+		unsigned int block_end = min(x + SM750_DRM_DAMAGE_SPLIT_GAP, end);
+		unsigned int first_changed;
+		unsigned int candidate;
+
+		if (!memcmp(source + x, snapshot + x,
+			    (block_end - x) * sizeof(*source))) {
+			if (block_end - last_changed > SM750_DRM_DAMAGE_SPLIT_GAP)
+				break;
+			x = block_end;
+			continue;
+		}
+		first_changed = x;
+		while (source[first_changed] == snapshot[first_changed])
+			first_changed++;
+		if (first_changed - last_changed > SM750_DRM_DAMAGE_SPLIT_GAP)
+			break;
+		candidate = block_end;
+		do {
+			candidate--;
+		} while (source[candidate] == snapshot[candidate]);
+		last_changed = candidate;
+		x = block_end;
+	}
+
+	*run_x2 = last_changed + 1;
+	*cursor = *run_x2;
+	return true;
+}
+
+static void sm750_upload_rgb565_span(struct sm750_drm_device *sdev,
+				     const u16 *source, unsigned int y,
+				     unsigned int dst_x1,
+				     unsigned int dst_x2)
+{
+	u16 *snapshot;
+	unsigned int count = dst_x2 - dst_x1;
+	unsigned int cursor = 0;
+	unsigned int run_x1;
+	unsigned int run_x2;
+
+	if (!count)
+		return;
+	snapshot = sdev->rgb565_scanout_snapshot ?
+		sdev->rgb565_scanout_snapshot +
+		(size_t)y * SM750_DRM_PHYSICAL_MAX_WIDTH + dst_x1 : NULL;
+	if (!snapshot || !sdev->rgb565_scanout_snapshot_valid) {
+		if (snapshot)
+			memcpy(snapshot, source, count * sizeof(*source));
+		sm750_shadow_upload(sdev,
+			(size_t)y * sdev->scanout_pitch + dst_x1 * sizeof(u16),
+			source, count * sizeof(*source));
+		return;
+	}
+
+	while (sm750_next_changed_u16_run(source, snapshot, count, &cursor,
+					  &run_x1, &run_x2)) {
+		memcpy(snapshot + run_x1, source + run_x1,
+		       (run_x2 - run_x1) * sizeof(*source));
+		sm750_shadow_upload(sdev,
+			(size_t)y * sdev->scanout_pitch +
+			(dst_x1 + run_x1) * sizeof(u16),
+			source + run_x1, (run_x2 - run_x1) * sizeof(*source));
+	}
+}
+
 static void sm750_softscale_upload_span(struct sm750_drm_device *sdev,
 					const u32 *scale_source,
 					unsigned int y,
@@ -1463,9 +1617,18 @@ static void sm750_softscale_upload_span(struct sm750_drm_device *sdev,
 	unsigned int dst_x2;
 	size_t dst_offset = (size_t)y * sdev->scanout_pitch;
 
-	dst_x1 = (u64)src_x1 * 2048 / sdev->softscale_source_width;
-	dst_x2 = DIV_ROUND_UP_ULL((u64)src_x2 * 2048,
-				   sdev->softscale_source_width);
+	if (sdev->softscale_source_width == 2464) {
+		dst_x1 = src_x1 * 64U / 77U;
+		dst_x2 = DIV_ROUND_UP(src_x2 * 64U, 77U);
+	} else if (sdev->softscale_source_width == 2560) {
+		dst_x1 = src_x1 * 4U / 5U;
+		dst_x2 = DIV_ROUND_UP(src_x2 * 4U, 5U);
+	} else {
+		dst_x1 = (u64)src_x1 * 2048 /
+			sdev->softscale_source_width;
+		dst_x2 = DIV_ROUND_UP_ULL((u64)src_x2 * 2048,
+					   sdev->softscale_source_width);
+	}
 	/* Sharpening also changes the immediate neighbours of scaled damage. */
 	if (sharpen) {
 		if (dst_x1)
@@ -1537,9 +1700,8 @@ static void sm750_softscale_upload_span(struct sm750_drm_device *sdev,
 			sdev->dither_output_line, scale_source, y,
 			sdev->dither_scale_map, dst_x1, dst_x2);
 	}
-	sm750_shadow_upload(sdev, dst_offset + dst_x1 * sizeof(u16),
-		sdev->dither_output_line + dst_x1,
-		(dst_x2 - dst_x1) * sizeof(u16));
+	sm750_upload_rgb565_span(sdev, sdev->dither_output_line + dst_x1,
+				 y, dst_x1, dst_x2);
 }
 
 static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
@@ -1606,35 +1768,18 @@ static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
 							 src_x1, src_x2);
 				continue;
 			}
-			if (!memcmp(source_row + src_x1, snapshot + src_x1,
-				    (src_x2 - src_x1) * sizeof(u32)))
-				continue;
-
 			x = src_x1;
 			while (x < src_x2) {
 				unsigned int run_x1;
-				unsigned int last_changed;
+				unsigned int run_x2;
 
-				while (x < src_x2 && source_row[x] == snapshot[x])
-					x++;
-				if (x == src_x2)
+				if (!sm750_next_changed_u32_run(source_row, snapshot,
+						src_x2, &x, &run_x1, &run_x2))
 					break;
-				run_x1 = x;
-				last_changed = x++;
-				while (x < src_x2) {
-					if (source_row[x] != snapshot[x]) {
-						last_changed = x++;
-						continue;
-					}
-					if (x - last_changed >=
-					    SM750_DRM_DAMAGE_SPLIT_GAP)
-						break;
-					x++;
-				}
 				memcpy(snapshot + run_x1, source_row + run_x1,
-				       (last_changed + 1 - run_x1) * sizeof(u32));
+				       (run_x2 - run_x1) * sizeof(u32));
 				sm750_softscale_upload_span(sdev, snapshot, y,
-						run_x1, last_changed + 1);
+						run_x1, run_x2);
 			}
 			continue;
 		}
@@ -1692,14 +1837,19 @@ static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
 		else
 			sm750_xrgb8888_to_rgb565(sdev->dither_output_line,
 					sdev->dither_source_line + changed_x1, width);
-		sm750_shadow_upload(sdev, dst_offset, sdev->dither_output_line,
-				width * sizeof(u16));
+		sm750_upload_rgb565_span(sdev, sdev->dither_output_line, y,
+					 src_x1, src_x1 + width);
 	}
 	if (double_shadow && !sdev->shadow_source_snapshot_valid &&
 	    rect->x1 <= 0 && rect->y1 <= 0 &&
 	    rect->x2 >= sdev->shadow_source_width &&
 	    rect->y2 >= sdev->shadow_source_height)
 		sdev->shadow_source_snapshot_valid = true;
+	if (sdev->rgb565_scanout_snapshot &&
+	    rect->x1 <= 0 && rect->y1 <= 0 &&
+	    rect->x2 >= sdev->shadow_source_width &&
+	    rect->y2 >= sdev->shadow_source_height)
+		sdev->rgb565_scanout_snapshot_valid = true;
 }
 
 static void sm750_shadow_rect(struct sm750_drm_device *sdev,
@@ -2140,6 +2290,7 @@ static void sm750_pipe_enable(struct drm_simple_display_pipe *pipe,
 		sdev->shadow_source_width = crtc_state->adjusted_mode.hdisplay;
 		sdev->shadow_source_height = crtc_state->adjusted_mode.vdisplay;
 		sdev->shadow_source_snapshot_valid = false;
+		sdev->rgb565_scanout_snapshot_valid = false;
 		if (sdev->softscale_active &&
 		    sdev->softscale_source_width != 2560) {
 			ret = sm750_dither_scale_map_init(sdev->dither_scale_map,
@@ -2180,6 +2331,7 @@ fail:
 	sdev->shadow_source_width = 0;
 	sdev->shadow_source_height = 0;
 	sdev->shadow_source_snapshot_valid = false;
+	sdev->rgb565_scanout_snapshot_valid = false;
 	drm_err(&sdev->drm, "failed to enable HDMI mode: %d\n", ret);
 }
 
@@ -2228,6 +2380,7 @@ static void sm750_pipe_disable(struct drm_simple_display_pipe *pipe)
 	sdev->shadow_source_width = 0;
 	sdev->shadow_source_height = 0;
 	sdev->shadow_source_snapshot_valid = false;
+	sdev->rgb565_scanout_snapshot_valid = false;
 }
 
 static enum drm_mode_status
@@ -2436,7 +2589,7 @@ static void sm750_unmap_vram(void *data)
 	pci_iounmap(sdev->pdev, sdev->vram);
 }
 
-static void sm750_free_shadow_source_snapshot(void *data)
+static void sm750_free_shadow_buffer(void *data)
 {
 	kvfree(data);
 }
@@ -2540,6 +2693,11 @@ static int sm750_pci_probe(struct pci_dev *pdev,
 			sdev->shadow_source_snapshot = kvcalloc(
 				(size_t)SM750_DRM_MAX_WIDTH * SM750_DRM_MAX_HEIGHT,
 				sizeof(*sdev->shadow_source_snapshot), GFP_KERNEL);
+		if (double_shadow && sdev->rgb565)
+			sdev->rgb565_scanout_snapshot = kvcalloc(
+				(size_t)SM750_DRM_PHYSICAL_MAX_WIDTH *
+				SM750_DRM_MAX_HEIGHT,
+				sizeof(*sdev->rgb565_scanout_snapshot), GFP_KERNEL);
 		sdev->softscale_output_line = devm_kmalloc_array(&pdev->dev,
 			SM750_DITHER_SCALE_MAX_SAMPLES,
 			sizeof(*sdev->softscale_output_line), GFP_KERNEL);
@@ -2556,14 +2714,23 @@ static int sm750_pci_probe(struct pci_dev *pdev,
 		}
 		if (!sdev->dither_scale_map || !sdev->dither_source_line ||
 		    (double_shadow && !sdev->shadow_source_snapshot) ||
+		    (double_shadow && sdev->rgb565 &&
+		     !sdev->rgb565_scanout_snapshot) ||
 		    !sdev->softscale_output_line || !sdev->xrgb_output_line ||
 		    (sdev->hardware_cursor &&
 		     (!sdev->cursor_source || !sdev->cursor_image)))
 			return -ENOMEM;
 		if (sdev->shadow_source_snapshot) {
 			ret = devm_add_action_or_reset(&pdev->dev,
-					sm750_free_shadow_source_snapshot,
+					sm750_free_shadow_buffer,
 					sdev->shadow_source_snapshot);
+			if (ret)
+				return ret;
+		}
+		if (sdev->rgb565_scanout_snapshot) {
+			ret = devm_add_action_or_reset(&pdev->dev,
+					sm750_free_shadow_buffer,
+					sdev->rgb565_scanout_snapshot);
 			if (ret)
 				return ret;
 		}
