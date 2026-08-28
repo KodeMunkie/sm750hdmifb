@@ -15,12 +15,15 @@ for requirement in \
 	'#define SM750_DRM_DAMAGE_SPLIT_GAP 64' \
 	'if (!src->is_iomem) {' \
 	'source_row = (const u32 *)((const u8 *)src->vaddr +' \
+	'source_span = (const u32 *)((const u8 *)src->vaddr +' \
 	'sm750_next_changed_u32_run(source_row, snapshot,' \
+	'sm750_next_changed_u32_run(source_span, snapshot, width,' \
 	'sm750_next_changed_u16_run(source, snapshot, count,' \
 	'(block_end - x) * sizeof(*source)' \
 	'if (!memcmp(source_row + src_x1, snapshot + src_x1,' \
 	'if (!memcmp(source, snapshot, count * sizeof(*source)))' \
 	'memcpy(snapshot + run_x1, source_row + run_x1,' \
+	'sm750_unscaled_upload_span(sdev, source_span + run_x1, y,' \
 	'sm750_softscale_upload_span(sdev, snapshot, y,' \
 	'u16 *rgb565_scanout_snapshot;' \
 	'sm750_upload_rgb565_span(sdev,' \

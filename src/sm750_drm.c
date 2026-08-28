@@ -1724,6 +1724,32 @@ static void sm750_softscale_upload_span(struct sm750_drm_device *sdev,
 				 y, dst_x1, dst_x2);
 }
 
+static void sm750_unscaled_upload_span(struct sm750_drm_device *sdev,
+				       const u32 *source, unsigned int y,
+				       unsigned int dst_x, unsigned int count)
+{
+	size_t dst_offset;
+
+	if (!count)
+		return;
+	dst_offset = (size_t)y * sdev->scanout_pitch +
+		(size_t)dst_x * (sdev->rgb565 ? sizeof(u16) : sizeof(u32));
+	if (!sdev->rgb565) {
+		sm750_shadow_upload(sdev, dst_offset, source,
+				    count * sizeof(*source));
+		return;
+	}
+	if (sdev->bbdither)
+		sm750_dither_xrgb8888_to_rgb565(sdev->dither,
+				sdev->dither_output_line, count, source, count,
+				dst_x, y, count, 1);
+	else
+		sm750_xrgb8888_to_rgb565(sdev->dither_output_line, source,
+					 count);
+	sm750_upload_rgb565_span(sdev, sdev->dither_output_line, y,
+				 dst_x, dst_x + count);
+}
+
 static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
 				     struct drm_plane_state *plane_state,
 				     const struct drm_rect *rect)
@@ -1810,58 +1836,44 @@ static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
 						  sdev->shadow_source_width);
 		unsigned int src_x2 = clamp_t(int, rect->x2, 0,
 						  sdev->shadow_source_width);
-		unsigned int changed_x1 = 0;
-		unsigned int changed_x2;
+		const u32 *source_span;
+		unsigned int cursor = 0;
+		unsigned int run_x1;
+		unsigned int run_x2;
 		u32 *snapshot = double_shadow ? sdev->shadow_source_snapshot +
 			(size_t)y * SM750_DRM_MAX_WIDTH + src_x1 : NULL;
 		size_t src_offset;
-		size_t dst_offset;
 
 		if (src_x1 >= src_x2)
 			continue;
 		width = src_x2 - src_x1;
-		changed_x2 = width;
 		src_offset = (size_t)y * plane_state->fb->pitches[0] +
 			(size_t)src_x1 * sizeof(u32);
-		iosys_map_memcpy_from(sdev->dither_source_line, src,
-				      src_offset, width * sizeof(u32));
-		if (snapshot && sdev->shadow_source_snapshot_valid) {
-			while (changed_x1 < changed_x2 &&
-			       sdev->dither_source_line[changed_x1] ==
-			       snapshot[changed_x1])
-				changed_x1++;
-			if (changed_x1 == changed_x2)
-				continue;
-			while (changed_x2 > changed_x1 &&
-			       sdev->dither_source_line[changed_x2 - 1] ==
-			       snapshot[changed_x2 - 1])
-				changed_x2--;
+		if (!src->is_iomem) {
+			source_span = (const u32 *)((const u8 *)src->vaddr +
+						  src_offset);
+		} else {
+			iosys_map_memcpy_from(sdev->dither_source_line, src,
+					      src_offset, width * sizeof(u32));
+			source_span = sdev->dither_source_line;
 		}
-		if (snapshot)
-			memcpy(snapshot + changed_x1,
-			       sdev->dither_source_line + changed_x1,
-			       (changed_x2 - changed_x1) * sizeof(u32));
-		src_x1 += changed_x1;
-		width = changed_x2 - changed_x1;
-		dst_offset = (size_t)y * sdev->scanout_pitch +
-			(size_t)src_x1 *
-			(sdev->rgb565 ? sizeof(u16) : sizeof(u32));
-		if (!sdev->rgb565) {
-			sm750_shadow_upload(sdev, dst_offset,
-				sdev->dither_source_line + changed_x1,
-				width * sizeof(u32));
+		if (!snapshot || !sdev->shadow_source_snapshot_valid) {
+			if (snapshot)
+				memcpy(snapshot, source_span,
+				       width * sizeof(*source_span));
+			sm750_unscaled_upload_span(sdev, source_span, y, src_x1,
+						     width);
 			continue;
 		}
-		if (sdev->bbdither)
-			sm750_dither_xrgb8888_to_rgb565(sdev->dither,
-					sdev->dither_output_line, width,
-					sdev->dither_source_line + changed_x1,
-					width, src_x1, y, width, 1);
-		else
-			sm750_xrgb8888_to_rgb565(sdev->dither_output_line,
-					sdev->dither_source_line + changed_x1, width);
-		sm750_upload_rgb565_span(sdev, sdev->dither_output_line, y,
-					 src_x1, src_x1 + width);
+		if (!memcmp(source_span, snapshot, width * sizeof(*source_span)))
+			continue;
+		while (sm750_next_changed_u32_run(source_span, snapshot, width,
+						  &cursor, &run_x1, &run_x2)) {
+			memcpy(snapshot + run_x1, source_span + run_x1,
+			       (run_x2 - run_x1) * sizeof(*source_span));
+			sm750_unscaled_upload_span(sdev, source_span + run_x1, y,
+					src_x1 + run_x1, run_x2 - run_x1);
+		}
 	}
 	if (double_shadow && !sdev->shadow_source_snapshot_valid &&
 	    rect->x1 <= 0 && rect->y1 <= 0 &&
