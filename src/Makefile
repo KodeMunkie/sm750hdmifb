@@ -3,6 +3,7 @@ obj-m += sm750hdmidrm.o
 sm750hdmidrm-y := sm750_drm.o sm750_drm_mode.o sm750_dither.o ddk750_chip.o \
 	ddk750_mode.o ddk750_power.o ddk750_display.o ddk750_swi2c.o \
 	ddk750_hwi2c.o sii902x.o
+CFLAGS_sm750_dither.o += -O3
 ifeq ($(SM750_DRM_SCANOUT_DEFAULT),xrgb8888)
 ccflags-y += -DSM750_DRM_DEFAULT_XRGB8888=1
 else ifeq ($(SM750_DRM_SCANOUT_DEFAULT),rgb565)

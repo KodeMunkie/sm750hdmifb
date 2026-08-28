@@ -12,7 +12,9 @@ for requirement in \
 	'if (sdev->softscale_source_width == 2464)' \
 	'sharpen8_adjustment[1021]' \
 	'sm750_weighted_pixel_3(' \
-	'sm750_scale_77_next('; do
+	'sm750_scale_77_next(' \
+	'sm750_dither_scale_5_to_4_sharpen_xrgb8888_to_rgb565(' \
+	'sm750_scale_5_next('; do
 	grep -F "$requirement" "$source_file" "$dither_file" \
 		"$dither_header" >/dev/null || {
 		echo "Missing fused 2464 sharpen requirement: $requirement" >&2

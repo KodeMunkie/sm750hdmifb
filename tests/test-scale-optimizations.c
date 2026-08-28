@@ -11,6 +11,11 @@ struct scale_77_state {
 	unsigned int phase;
 };
 
+struct scale_5_state {
+	unsigned int source_x;
+	unsigned int phase;
+};
+
 static uint32_t packed_weighted_2(uint32_t p0, unsigned int w0,
 				  uint32_t p1, unsigned int w1,
 				  unsigned int divisor,
@@ -99,12 +104,29 @@ static uint32_t reference_5(const uint32_t *src, unsigned int x)
 	return red << 16 | green << 8 | blue;
 }
 
+static uint32_t optimized_5(const uint32_t *src, struct scale_5_state *state)
+{
+	unsigned int phase = state->phase;
+	unsigned int sx = state->source_x;
+	uint32_t pixel = packed_weighted_2(src[sx], 4U - phase,
+			src[sx + 1], 1U + phase, 5, 2);
+
+	state->source_x = sx + 1;
+	state->phase = phase + 1;
+	if (state->phase == 4) {
+		state->phase = 0;
+		state->source_x++;
+	}
+	return pixel;
+}
+
 int main(void)
 {
 	uint32_t source_77[WIDTH_77];
 	uint32_t source_5[WIDTH_5];
 	int sharpen_table[1021];
 	struct scale_77_state state = { 0, 0 };
+	struct scale_5_state state_5 = { 0, 0 };
 	uint32_t seed = 0x750750U;
 	unsigned int x;
 	int detail;
@@ -117,16 +139,16 @@ int main(void)
 	}
 	for (x = 0; x < OUTPUT_WIDTH; x++) {
 		uint32_t optimized = optimized_77(source_77, &state);
-		unsigned int phase = x & 3U;
-		unsigned int sx = (x >> 2) * 5U + phase;
-		uint32_t optimized_5 = packed_weighted_2(source_5[sx],
-			4U - phase, source_5[sx + 1], 1U + phase, 5, 2);
+		uint32_t pixel_5 = optimized_5(source_5, &state_5);
 
 		if (optimized != reference_77(source_77, x) ||
-		    optimized_5 != reference_5(source_5, x))
+		    pixel_5 != reference_5(source_5, x))
 			return 1;
 		if (state.source_x != ((x + 1) * 77U >> 6) ||
 		    state.phase != ((x + 1) * 13U & 63U))
+			return 1;
+		if (state_5.source_x != ((x + 1) * 5U >> 2) ||
+		    state_5.phase != ((x + 1) & 3U))
 			return 1;
 	}
 	for (detail = -510; detail <= 510; detail++) {

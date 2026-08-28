@@ -45,6 +45,12 @@ void sm750_dither_scale_5_to_4_xrgb8888_to_rgb565(
 				     unsigned int y_origin,
 				     unsigned int dst_x1,
 				     unsigned int dst_x2);
+void sm750_dither_scale_5_to_4_sharpen_xrgb8888_to_rgb565(
+				     const struct sm750_dither *ctx,
+				     u16 *dst, const u32 *src,
+				     unsigned int y_origin,
+				     unsigned int dst_x1,
+				     unsigned int dst_x2);
 void sm750_dither_scale_77_to_64_xrgb8888_to_rgb565(
 				     const struct sm750_dither *ctx,
 				     u16 *dst, const u32 *src,
