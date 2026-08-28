@@ -10,7 +10,10 @@ dither_header=$project_dir/src/sm750_dither.h
 for requirement in \
 	'sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(' \
 	'if (sdev->softscale_source_width == 2464)' \
-	'sharpen8_adjustment[1021]' \
+	'SM750_DITHER_SHARPEN_LUT_SIZE 1024' \
+	'static __always_inline u32 sm750_scale_77_next(' \
+	'static __always_inline u32 sm750_scale_5_next(' \
+	'sm750_pack_rgb_channels(' \
 	'sm750_weighted_pixel_3(' \
 	'sm750_scale_77_next(' \
 	'sm750_dither_scale_5_to_4_sharpen_xrgb8888_to_rgb565(' \

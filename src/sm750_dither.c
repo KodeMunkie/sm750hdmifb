@@ -16,7 +16,7 @@ static const u8 bbdither8[64] = {
 int sm750_dither_init(struct sm750_dither *ctx,
 		      unsigned int green_gain_percent)
 {
-	int detail;
+	unsigned int sharpen_index;
 	unsigned int threshold;
 
 	if (!ctx || green_gain_percent > 100)
@@ -45,22 +45,27 @@ int sm750_dither_init(struct sm750_dither *ctx,
 			ctx->quantise6_green[threshold][value] = q6;
 		}
 	}
-	for (detail = -510; detail <= 510; detail++) {
+	for (sharpen_index = 0;
+	     sharpen_index < SM750_DITHER_SHARPEN_LUT_SIZE;
+	     sharpen_index++) {
+		int detail = (int)sharpen_index - 510;
 		int adjustment = detail * 8;
 
 		if (adjustment >= 0)
 			adjustment = (adjustment + 50) / 100;
 		else
 			adjustment = (adjustment - 50) / 100;
-		ctx->sharpen8_adjustment[detail + 510] = adjustment;
+		ctx->sharpen8_adjustment[sharpen_index] = adjustment;
 	}
 
 	return 0;
 }
 
-static u16 sm750_dither_pixel(const struct sm750_dither *ctx, u32 pixel,
+static __always_inline u16 sm750_dither_pixel(
+			      const struct sm750_dither *ctx, u32 pixel,
 			      unsigned int threshold)
 {
+	threshold &= 63U;
 	unsigned int red =
 		ctx->quantise5[threshold][(pixel >> 16) & 0xffU];
 	unsigned int green =
@@ -86,37 +91,43 @@ void sm750_xrgb8888_to_rgb565(u16 *dst, const u32 *src,
 		dst[x] = sm750_rgb565_pixel(src[x]);
 }
 
-static u32 sm750_weighted_pixel_2(u32 pixel0, unsigned int weight0,
+static __always_inline u64 sm750_pack_rgb_channels(u32 pixel)
+{
+	return (pixel & 0xffU) |
+		((u64)(pixel & 0x0000ff00U) << 8) |
+		((u64)(pixel & 0x00ff0000U) << 16);
+}
+
+static __always_inline u32 sm750_weighted_pixel_2(
+				  u32 pixel0, unsigned int weight0,
 				  u32 pixel1, unsigned int weight1,
 				  unsigned int divisor,
 				  unsigned int rounding)
 {
-	u64 red_blue = (u64)(pixel0 & 0x00ff00ffU) * weight0 +
-		(u64)(pixel1 & 0x00ff00ffU) * weight1;
-	unsigned int green = ((pixel0 >> 8) & 0xffU) * weight0 +
-		((pixel1 >> 8) & 0xffU) * weight1;
-	unsigned int red = (red_blue >> 16) & 0xffffU;
-	unsigned int blue = red_blue & 0xffffU;
+	u64 channels = sm750_pack_rgb_channels(pixel0) * weight0 +
+		sm750_pack_rgb_channels(pixel1) * weight1;
+	unsigned int red = (channels >> 32) & 0xffffU;
+	unsigned int green = (channels >> 16) & 0xffffU;
+	unsigned int blue = channels & 0xffffU;
 
 	return ((red + rounding) / divisor) << 16 |
 		((green + rounding) / divisor) << 8 |
 		((blue + rounding) / divisor);
 }
 
-static u32 sm750_weighted_pixel_3(u32 pixel0, unsigned int weight0,
+static __always_inline u32 sm750_weighted_pixel_3(
+				  u32 pixel0, unsigned int weight0,
 				  u32 pixel1, unsigned int weight1,
 				  u32 pixel2, unsigned int weight2,
 				  unsigned int divisor,
 				  unsigned int rounding)
 {
-	u64 red_blue = (u64)(pixel0 & 0x00ff00ffU) * weight0 +
-		(u64)(pixel1 & 0x00ff00ffU) * weight1 +
-		(u64)(pixel2 & 0x00ff00ffU) * weight2;
-	unsigned int green = ((pixel0 >> 8) & 0xffU) * weight0 +
-		((pixel1 >> 8) & 0xffU) * weight1 +
-		((pixel2 >> 8) & 0xffU) * weight2;
-	unsigned int red = (red_blue >> 16) & 0xffffU;
-	unsigned int blue = red_blue & 0xffffU;
+	u64 channels = sm750_pack_rgb_channels(pixel0) * weight0 +
+		sm750_pack_rgb_channels(pixel1) * weight1 +
+		sm750_pack_rgb_channels(pixel2) * weight2;
+	unsigned int red = (channels >> 32) & 0xffffU;
+	unsigned int green = (channels >> 16) & 0xffffU;
+	unsigned int blue = channels & 0xffffU;
 
 	return ((red + rounding) / divisor) << 16 |
 		((green + rounding) / divisor) << 8 |
@@ -128,14 +139,16 @@ struct sm750_scale_5_state {
 	unsigned int phase;
 };
 
-static void sm750_scale_5_state_init(struct sm750_scale_5_state *state,
+static __always_inline void sm750_scale_5_state_init(
+				     struct sm750_scale_5_state *state,
 				     unsigned int x)
 {
 	state->phase = x & 3U;
 	state->source_x = (x >> 2) * 5U + state->phase;
 }
 
-static u32 sm750_scale_5_next(const u32 *src,
+static __always_inline u32 sm750_scale_5_next(
+			      const u32 *src,
 			      struct sm750_scale_5_state *state)
 {
 	unsigned int phase = state->phase;
@@ -154,7 +167,8 @@ static u32 sm750_scale_5_next(const u32 *src,
 	return pixel;
 }
 
-static u32 sm750_scale_5_to_4_pixel(const u32 *src, unsigned int x)
+static __always_inline u32 sm750_scale_5_to_4_pixel(const u32 *src,
+						    unsigned int x)
 {
 	struct sm750_scale_5_state state;
 
@@ -168,14 +182,16 @@ struct sm750_scale_77_state {
 	unsigned int phase;
 };
 
-static void sm750_scale_77_state_init(struct sm750_scale_77_state *state,
+static __always_inline void sm750_scale_77_state_init(
+				      struct sm750_scale_77_state *state,
 				      unsigned int x)
 {
 	state->source_x = (x * 77U) >> 6;
 	state->phase = (x * 13U) & 63U;
 }
 
-static u32 sm750_scale_77_next(const u32 *src,
+static __always_inline u32 sm750_scale_77_next(
+			       const u32 *src,
 			       struct sm750_scale_77_state *state)
 {
 	unsigned int phase = state->phase;
@@ -197,7 +213,8 @@ static u32 sm750_scale_77_next(const u32 *src,
 	return pixel;
 }
 
-static u32 sm750_scale_77_to_64_pixel(const u32 *src, unsigned int x)
+static __always_inline u32 sm750_scale_77_to_64_pixel(const u32 *src,
+						       unsigned int x)
 {
 	struct sm750_scale_77_state state;
 
@@ -391,15 +408,17 @@ static u8 sm750_sharpen_channel(unsigned int left, unsigned int center,
 	return clamp_t(int, (int)center + adjustment, 0, 255);
 }
 
-static u8 sm750_sharpen_channel_8(const struct sm750_dither *ctx,
-				  unsigned int left,
-				  unsigned int center,
-				  unsigned int right)
+static __always_inline u8 sm750_sharpen_channel_8(
+				  const struct sm750_dither *ctx,
+				  u8 left, u8 center, u8 right)
 {
+	const s8 *adjustment = ctx->sharpen8_adjustment;
 	int detail = 2 * (int)center - (int)left - (int)right;
+	unsigned int index = (detail + 510) &
+		(SM750_DITHER_SHARPEN_LUT_SIZE - 1);
 
 	return clamp_t(int,
-		(int)center + ctx->sharpen8_adjustment[detail + 510], 0, 255);
+		(int)center + adjustment[index], 0, 255);
 }
 
 void sm750_dither_scale_5_to_4_sharpen_xrgb8888_to_rgb565(

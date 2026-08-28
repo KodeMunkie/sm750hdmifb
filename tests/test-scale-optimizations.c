@@ -6,6 +6,13 @@
 #define WIDTH_5 2560
 #define OUTPUT_WIDTH 2048
 
+static uint64_t pack_rgb_channels(uint32_t pixel)
+{
+	return (pixel & 0xffU) |
+		((uint64_t)(pixel & 0x0000ff00U) << 8) |
+		((uint64_t)(pixel & 0x00ff0000U) << 16);
+}
+
 struct scale_77_state {
 	unsigned int source_x;
 	unsigned int phase;
@@ -21,14 +28,12 @@ static uint32_t packed_weighted_2(uint32_t p0, unsigned int w0,
 				  unsigned int divisor,
 				  unsigned int rounding)
 {
-	uint64_t rb = (uint64_t)(p0 & 0x00ff00ffU) * w0 +
-		(uint64_t)(p1 & 0x00ff00ffU) * w1;
-	unsigned int green = ((p0 >> 8) & 0xffU) * w0 +
-		((p1 >> 8) & 0xffU) * w1;
+	uint64_t channels = pack_rgb_channels(p0) * w0 +
+		pack_rgb_channels(p1) * w1;
 
-	return ((((rb >> 16) & 0xffffU) + rounding) / divisor) << 16 |
-		((green + rounding) / divisor) << 8 |
-		(((rb & 0xffffU) + rounding) / divisor);
+	return ((((channels >> 32) & 0xffffU) + rounding) / divisor) << 16 |
+		((((channels >> 16) & 0xffffU) + rounding) / divisor) << 8 |
+		(((channels & 0xffffU) + rounding) / divisor);
 }
 
 static uint32_t packed_weighted_3(uint32_t p0, unsigned int w0,
@@ -37,15 +42,12 @@ static uint32_t packed_weighted_3(uint32_t p0, unsigned int w0,
 				  unsigned int divisor,
 				  unsigned int rounding)
 {
-	uint64_t rb = (uint64_t)(p0 & 0x00ff00ffU) * w0 +
-		(uint64_t)(p1 & 0x00ff00ffU) * w1 +
-		(uint64_t)(p2 & 0x00ff00ffU) * w2;
-	unsigned int green = ((p0 >> 8) & 0xffU) * w0 +
-		((p1 >> 8) & 0xffU) * w1 + ((p2 >> 8) & 0xffU) * w2;
+	uint64_t channels = pack_rgb_channels(p0) * w0 +
+		pack_rgb_channels(p1) * w1 + pack_rgb_channels(p2) * w2;
 
-	return ((((rb >> 16) & 0xffffU) + rounding) / divisor) << 16 |
-		((green + rounding) / divisor) << 8 |
-		(((rb & 0xffffU) + rounding) / divisor);
+	return ((((channels >> 32) & 0xffffU) + rounding) / divisor) << 16 |
+		((((channels >> 16) & 0xffffU) + rounding) / divisor) << 8 |
+		(((channels & 0xffffU) + rounding) / divisor);
 }
 
 static uint32_t reference_77(const uint32_t *src, unsigned int x)
@@ -124,7 +126,7 @@ int main(void)
 {
 	uint32_t source_77[WIDTH_77];
 	uint32_t source_5[WIDTH_5];
-	int sharpen_table[1021];
+	int sharpen_table[1024];
 	struct scale_77_state state = { 0, 0 };
 	struct scale_5_state state_5 = { 0, 0 };
 	uint32_t seed = 0x750750U;
@@ -151,7 +153,7 @@ int main(void)
 		    state_5.phase != ((x + 1) & 3U))
 			return 1;
 	}
-	for (detail = -510; detail <= 510; detail++) {
+	for (detail = -510; detail <= 513; detail++) {
 		int adjustment = detail * 8;
 		int magnitude = detail < 0 ? -detail * 8 : detail * 8;
 		int reference = magnitude / 100 +

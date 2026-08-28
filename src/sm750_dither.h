@@ -7,11 +7,12 @@
 
 #define SM750_DITHER_SCALE_MAX_SAMPLES 2048
 #define SM750_DITHER_SCALE_MAX_TAPS 3
+#define SM750_DITHER_SHARPEN_LUT_SIZE 1024
 
 struct sm750_dither {
 	u8 quantise5[64][256];
 	u8 quantise6_green[64][256];
-	s8 sharpen8_adjustment[1021];
+	s8 sharpen8_adjustment[SM750_DITHER_SHARPEN_LUT_SIZE];
 };
 
 struct sm750_dither_scale_sample {

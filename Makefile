@@ -19,6 +19,7 @@ check: all tests/check-vblank tests/test-bbdither-rgb565 \
 	./tests/check-drm-packaging.sh
 	./tests/check-softscale-map.sh
 	./tests/check-softscale-sharpen.sh
+	./tests/check-softscale-codegen.sh src/sm750_dither.o
 	./tests/check-hardware-cursor.sh
 	./tests/check-shadow-dma.sh
 	./tests/check-shadow-source-damage.sh
