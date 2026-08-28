@@ -10,6 +10,7 @@
 #define SM750_DITHER_SHARPEN_LUT_SIZE 1024
 
 struct sm750_dither {
+	/* Quantisation rows are ordered by 8x8 screen position. */
 	u8 quantise5[64][256];
 	u8 quantise6_green[64][256];
 	s8 sharpen8_adjustment[SM750_DITHER_SHARPEN_LUT_SIZE];

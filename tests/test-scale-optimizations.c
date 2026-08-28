@@ -14,13 +14,11 @@ static uint64_t pack_rgb_channels(uint32_t pixel)
 }
 
 struct scale_77_state {
-	unsigned int source_x;
-	unsigned int phase;
+	unsigned int position;
 };
 
 struct scale_5_state {
-	unsigned int source_x;
-	unsigned int phase;
+	unsigned int position;
 };
 
 static uint32_t packed_weighted_2(uint32_t p0, unsigned int w0,
@@ -73,20 +71,16 @@ static uint32_t reference_77(const uint32_t *src, unsigned int x)
 static uint32_t optimized_77(const uint32_t *src,
 			     struct scale_77_state *state)
 {
-	unsigned int phase = state->phase;
-	unsigned int sx = state->source_x;
+	unsigned int position = state->position;
+	unsigned int phase = position & 63U;
+	unsigned int sx = position >> 6;
 	unsigned int w0 = 64U - phase;
 	unsigned int w1 = 13U + phase < 64U ? 13U + phase : 64U;
 	unsigned int w2 = phase > 51U ? phase - 51U : 0U;
 	uint32_t pixel = packed_weighted_3(src[sx], w0, src[sx + 1], w1,
 			w2 ? src[sx + 2] : 0, w2, 77, 38);
 
-	state->source_x = sx + 1;
-	state->phase = phase + 13;
-	if (state->phase >= 64) {
-		state->phase -= 64;
-		state->source_x++;
-	}
+	state->position = position + 77U;
 	return pixel;
 }
 
@@ -108,17 +102,13 @@ static uint32_t reference_5(const uint32_t *src, unsigned int x)
 
 static uint32_t optimized_5(const uint32_t *src, struct scale_5_state *state)
 {
-	unsigned int phase = state->phase;
-	unsigned int sx = state->source_x;
+	unsigned int position = state->position;
+	unsigned int phase = position & 3U;
+	unsigned int sx = position >> 2;
 	uint32_t pixel = packed_weighted_2(src[sx], 4U - phase,
 			src[sx + 1], 1U + phase, 5, 2);
 
-	state->source_x = sx + 1;
-	state->phase = phase + 1;
-	if (state->phase == 4) {
-		state->phase = 0;
-		state->source_x++;
-	}
+	state->position = position + 5U;
 	return pixel;
 }
 
@@ -127,8 +117,8 @@ int main(void)
 	uint32_t source_77[WIDTH_77];
 	uint32_t source_5[WIDTH_5];
 	int sharpen_table[1024];
-	struct scale_77_state state = { 0, 0 };
-	struct scale_5_state state_5 = { 0, 0 };
+	struct scale_77_state state = { 0 };
+	struct scale_5_state state_5 = { 0 };
 	uint32_t seed = 0x750750U;
 	unsigned int x;
 	int detail;
@@ -146,11 +136,9 @@ int main(void)
 		if (optimized != reference_77(source_77, x) ||
 		    pixel_5 != reference_5(source_5, x))
 			return 1;
-		if (state.source_x != ((x + 1) * 77U >> 6) ||
-		    state.phase != ((x + 1) * 13U & 63U))
+		if (state.position != (x + 1) * 77U)
 			return 1;
-		if (state_5.source_x != ((x + 1) * 5U >> 2) ||
-		    state_5.phase != ((x + 1) & 3U))
+		if (state_5.position != (x + 1) * 5U)
 			return 1;
 	}
 	for (detail = -510; detail <= 513; detail++) {

@@ -17,12 +17,13 @@ int sm750_dither_init(struct sm750_dither *ctx,
 		      unsigned int green_gain_percent)
 {
 	unsigned int sharpen_index;
-	unsigned int threshold;
+	unsigned int position;
 
 	if (!ctx || green_gain_percent > 100)
 		return -EINVAL;
 
-	for (threshold = 0; threshold < 64; threshold++) {
+	for (position = 0; position < 64; position++) {
+		unsigned int threshold = bbdither8[position];
 		unsigned int value;
 
 		for (value = 0; value < 256; value++) {
@@ -41,8 +42,8 @@ int sm750_dither_init(struct sm750_dither *ctx,
 				q5++;
 			if (rem6 * 128 > midpoint6 && q6 < 63)
 				q6++;
-			ctx->quantise5[threshold][value] = q5;
-			ctx->quantise6_green[threshold][value] = q6;
+			ctx->quantise5[position][value] = q5;
+			ctx->quantise6_green[position][value] = q6;
 		}
 	}
 	for (sharpen_index = 0;
@@ -63,14 +64,14 @@ int sm750_dither_init(struct sm750_dither *ctx,
 
 static __always_inline u16 sm750_dither_pixel(
 			      const struct sm750_dither *ctx, u32 pixel,
-			      unsigned int threshold)
+			      unsigned int position)
 {
-	threshold &= 63U;
+	position &= 63U;
 	unsigned int red =
-		ctx->quantise5[threshold][(pixel >> 16) & 0xffU];
+		ctx->quantise5[position][(pixel >> 16) & 0xffU];
 	unsigned int green =
-		ctx->quantise6_green[threshold][(pixel >> 8) & 0xffU];
-	unsigned int blue = ctx->quantise5[threshold][pixel & 0xffU];
+		ctx->quantise6_green[position][(pixel >> 8) & 0xffU];
+	unsigned int blue = ctx->quantise5[position][pixel & 0xffU];
 
 	return (red << 11) | (green << 5) | blue;
 }
@@ -135,35 +136,29 @@ static __always_inline u32 sm750_weighted_pixel_3(
 }
 
 struct sm750_scale_5_state {
-	unsigned int source_x;
-	unsigned int phase;
+	unsigned int position;
 };
 
 static __always_inline void sm750_scale_5_state_init(
 				     struct sm750_scale_5_state *state,
 				     unsigned int x)
 {
-	state->phase = x & 3U;
-	state->source_x = (x >> 2) * 5U + state->phase;
+	state->position = x * 5U;
 }
 
 static __always_inline u32 sm750_scale_5_next(
 			      const u32 *src,
 			      struct sm750_scale_5_state *state)
 {
-	unsigned int phase = state->phase;
-	unsigned int source_x = state->source_x;
+	unsigned int position = state->position;
+	unsigned int phase = position & 3U;
+	unsigned int source_x = position >> 2;
 	unsigned int first_weight = 4U - phase;
 	unsigned int second_weight = 1U + phase;
 	u32 pixel = sm750_weighted_pixel_2(src[source_x], first_weight,
 			src[source_x + 1], second_weight, 5, 2);
 
-	state->source_x = source_x + 1;
-	state->phase = phase + 1;
-	if (state->phase == 4) {
-		state->phase = 0;
-		state->source_x++;
-	}
+	state->position = position + 5U;
 	return pixel;
 }
 
@@ -178,24 +173,23 @@ static __always_inline u32 sm750_scale_5_to_4_pixel(const u32 *src,
 
 /* 2464:2048 reduces exactly to 77:64. */
 struct sm750_scale_77_state {
-	unsigned int source_x;
-	unsigned int phase;
+	unsigned int position;
 };
 
 static __always_inline void sm750_scale_77_state_init(
 				      struct sm750_scale_77_state *state,
 				      unsigned int x)
 {
-	state->source_x = (x * 77U) >> 6;
-	state->phase = (x * 13U) & 63U;
+	state->position = x * 77U;
 }
 
 static __always_inline u32 sm750_scale_77_next(
 			       const u32 *src,
 			       struct sm750_scale_77_state *state)
 {
-	unsigned int phase = state->phase;
-	unsigned int source_x = state->source_x;
+	unsigned int position = state->position;
+	unsigned int phase = position & 63U;
+	unsigned int source_x = position >> 6;
 	unsigned int weight0 = 64U - phase;
 	unsigned int weight1 = min(13U + phase, 64U);
 	unsigned int weight2 = phase > 51U ? phase - 51U : 0U;
@@ -204,12 +198,7 @@ static __always_inline u32 sm750_scale_77_next(
 	pixel = sm750_weighted_pixel_3(src[source_x], weight0,
 			src[source_x + 1], weight1,
 			weight2 ? src[source_x + 2] : 0, weight2, 77, 38);
-	state->source_x = source_x + 1;
-	state->phase = phase + 13;
-	if (state->phase >= 64) {
-		state->phase -= 64;
-		state->source_x++;
-	}
+	state->position = position + 77U;
 	return pixel;
 }
 
@@ -233,14 +222,15 @@ void sm750_dither_xrgb8888_to_rgb565(const struct sm750_dither *ctx,
 	unsigned int y;
 
 	for (y = 0; y < height; y++) {
-		const u8 *matrix = &bbdither8[((y_origin + y) & 7U) << 3];
+		unsigned int dither_row = ((y_origin + y) & 7U) << 3;
 		unsigned int x;
 
 		for (x = 0; x < width; x++) {
 			u32 pixel = src[x];
-			unsigned int threshold = matrix[(x_origin + x) & 7U];
+			unsigned int position = dither_row |
+				((x_origin + x) & 7U);
 
-			dst[x] = sm750_dither_pixel(ctx, pixel, threshold);
+			dst[x] = sm750_dither_pixel(ctx, pixel, position);
 		}
 		src += src_stride;
 		dst += dst_stride;
@@ -254,7 +244,7 @@ void sm750_dither_scale_5_to_4_xrgb8888_to_rgb565(
 				     unsigned int dst_x1,
 				     unsigned int dst_x2)
 {
-	const u8 *matrix = &bbdither8[(y_origin & 7U) << 3];
+	unsigned int dither_row = (y_origin & 7U) << 3;
 	struct sm750_scale_5_state state;
 	unsigned int x;
 
@@ -262,7 +252,8 @@ void sm750_dither_scale_5_to_4_xrgb8888_to_rgb565(
 	for (x = dst_x1; x < dst_x2; x++) {
 		u32 pixel = sm750_scale_5_next(src, &state);
 
-		dst[x] = sm750_dither_pixel(ctx, pixel, matrix[x & 7U]);
+		dst[x] = sm750_dither_pixel(ctx, pixel,
+					     dither_row | (x & 7U));
 	}
 }
 
@@ -273,7 +264,7 @@ void sm750_dither_scale_77_to_64_xrgb8888_to_rgb565(
 				     unsigned int dst_x1,
 				     unsigned int dst_x2)
 {
-	const u8 *matrix = &bbdither8[(y_origin & 7U) << 3];
+	unsigned int dither_row = (y_origin & 7U) << 3;
 	struct sm750_scale_77_state state;
 	unsigned int x;
 
@@ -281,7 +272,8 @@ void sm750_dither_scale_77_to_64_xrgb8888_to_rgb565(
 	for (x = dst_x1; x < dst_x2; x++) {
 		u32 pixel = sm750_scale_77_next(src, &state);
 
-		dst[x] = sm750_dither_pixel(ctx, pixel, matrix[x & 7U]);
+		dst[x] = sm750_dither_pixel(ctx, pixel,
+					     dither_row | (x & 7U));
 	}
 }
 
@@ -386,12 +378,12 @@ void sm750_dither_scale_xrgb8888_to_rgb565(
 				     unsigned int dst_x1,
 				     unsigned int dst_x2)
 {
-	const u8 *matrix = &bbdither8[(y_origin & 7U) << 3];
+	unsigned int dither_row = (y_origin & 7U) << 3;
 	unsigned int x;
 
 	for (x = dst_x1; x < dst_x2; x++) {
 		dst[x] = sm750_dither_pixel(ctx, sm750_scale_map_pixel(src, map, x),
-					     matrix[x & 7U]);
+					     dither_row | (x & 7U));
 	}
 }
 
@@ -428,7 +420,7 @@ void sm750_dither_scale_5_to_4_sharpen_xrgb8888_to_rgb565(
 				     unsigned int dst_x1,
 				     unsigned int dst_x2)
 {
-	const u8 *matrix = &bbdither8[(y_origin & 7U) << 3];
+	unsigned int dither_row = (y_origin & 7U) << 3;
 	struct sm750_scale_5_state state;
 	u32 left;
 	u32 center;
@@ -452,7 +444,8 @@ void sm750_dither_scale_5_to_4_sharpen_xrgb8888_to_rgb565(
 			sm750_sharpen_channel_8(ctx, left & 0xffU,
 				center & 0xffU, right & 0xffU);
 
-		dst[x] = sm750_dither_pixel(ctx, pixel, matrix[x & 7U]);
+		dst[x] = sm750_dither_pixel(ctx, pixel,
+					     dither_row | (x & 7U));
 		left = center;
 		center = right;
 		right = x + 2 < SM750_DITHER_SCALE_MAX_SAMPLES ?
@@ -467,7 +460,7 @@ void sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(
 				     unsigned int dst_x1,
 				     unsigned int dst_x2)
 {
-	const u8 *matrix = &bbdither8[(y_origin & 7U) << 3];
+	unsigned int dither_row = (y_origin & 7U) << 3;
 	struct sm750_scale_77_state state;
 	u32 left;
 	u32 center;
@@ -491,7 +484,8 @@ void sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(
 			sm750_sharpen_channel_8(ctx, left & 0xffU,
 				center & 0xffU, right & 0xffU);
 
-		dst[x] = sm750_dither_pixel(ctx, pixel, matrix[x & 7U]);
+		dst[x] = sm750_dither_pixel(ctx, pixel,
+					     dither_row | (x & 7U));
 		left = center;
 		center = right;
 		right = x + 2 < SM750_DITHER_SCALE_MAX_SAMPLES ?
@@ -534,7 +528,7 @@ void sm750_dither_scale_sharpen_xrgb8888_to_rgb565(
 				     unsigned int dst_x1,
 				     unsigned int dst_x2)
 {
-	const u8 *matrix = &bbdither8[(y_origin & 7U) << 3];
+	unsigned int dither_row = (y_origin & 7U) << 3;
 	unsigned int calc_x1 = dst_x1 ? dst_x1 - 1 : 0;
 	unsigned int calc_x2 = min(dst_x2 + 1,
 				   (unsigned int)SM750_DITHER_SCALE_MAX_SAMPLES);
@@ -555,6 +549,7 @@ void sm750_dither_scale_sharpen_xrgb8888_to_rgb565(
 			sm750_sharpen_channel_8(ctx, left & 0xffU,
 				center & 0xffU, right & 0xffU);
 
-		dst[x] = sm750_dither_pixel(ctx, pixel, matrix[x & 7U]);
+		dst[x] = sm750_dither_pixel(ctx, pixel,
+					     dither_row | (x & 7U));
 	}
 }
