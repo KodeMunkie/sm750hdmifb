@@ -87,8 +87,8 @@ make check
 The build creates these files under `dist/`:
 
 ```text
-sm750hdmifb_0.5.0_all.deb
-sm750hdmifb-0.5.0-source.tar.gz
+sm750hdmifb_0.5.1_all.deb
+sm750hdmifb-0.5.1-source.tar.gz
 SHA256SUMS
 ```
 
@@ -97,7 +97,7 @@ Install the locally built package:
 ```sh
 cd dist
 sha256sum -c SHA256SUMS
-sudo apt install ./sm750hdmifb_0.5.0_all.deb
+sudo apt install ./sm750hdmifb_0.5.1_all.deb
 sudo reboot
 ```
 
@@ -131,7 +131,9 @@ sm750hdmidrm.edid_only=0 sm750hdmidrm.softscale_wide=1 sm750hdmidrm.sharpen=1 sm
 
 Then run `sudo update-grub` and reboot. This enables the driver catalogue,
 2464/2560 logical modes, 8% sharpening, dithered RGB565 and difference-trimmed
-double shadowing. Hardware cursor and DMA are already enabled by default.
+double shadowing. Hardware cursor is enabled by default; DMA is opt-in with
+`sm750hdmidrm.enable_dma=1` because CPU uploads are more responsive on the
+development system.
 
 To return to full 32-bit scanout, use:
 

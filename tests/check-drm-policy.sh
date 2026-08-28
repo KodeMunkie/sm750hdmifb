@@ -95,8 +95,21 @@ grep -F 'drm_connector_update_edid_property(connector, edid);' \
 	"$source_file" >/dev/null
 grep -F 'count = drm_add_edid_modes(connector, edid);' \
 	"$source_file" >/dev/null
+for requirement in \
+	'if (sdev->connected_edid_valid && sdev->monitor_disconnected &&' \
+	'memcmp(sdev->connected_edid, edid, SM750_DRM_EDID_SIZE)' \
+	'sm750_remember_disconnected_mode(sdev, connector);' \
+	'sm750_select_reconnected_monitor_mode(connector);' \
+	'sm750_catalog_supports_edid_mode(sdev, mode)' \
+	'sdev->hotplug_preferred_valid = true;' \
+	'"hotplug preferred mode %ux%u@%u is unavailable\n"'; do
+	grep -F "$requirement" "$source_file" >/dev/null || {
+		echo "Missing EDID hotplug policy: $requirement" >&2
+		exit 1
+	}
+done
 for parameter in edid_only softscale_wide sharpen double_shadow \
-		disable_hardware_cursor disable_dma; do
+		disable_hardware_cursor enable_dma disable_dma; do
 	grep -F "module_param($parameter, bool, 0444);" "$source_file" \
 		>/dev/null || {
 		echo "Missing runtime policy parameter: $parameter" >&2

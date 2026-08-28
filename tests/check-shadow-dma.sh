@@ -6,7 +6,9 @@ project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 source_file=$project_dir/src/sm750_drm.c
 
 for requirement in \
+	'module_param(enable_dma, bool, 0444);' \
 	'module_param(disable_dma, bool, 0444);' \
+	'#define SM750_DRM_DEFAULT_ENABLE_DMA 0' \
 	'static unsigned int shadow_dma_min_bytes = 4096;' \
 	'dma_set_mask_and_coherent(&sdev->pdev->dev, DMA_BIT_MASK(31))' \
 	'dmam_alloc_coherent(&sdev->pdev->dev,' \
@@ -28,7 +30,7 @@ for requirement in \
 	'DMA_ABORT_INTERRUPT_ABORT_1' \
 	'DMA1 shadow uploads enabled after off-screen transfer verification' \
 	'sdev->shadow_dma_enabled = false;' \
-	'if (!disable_dma) {' \
+	'if (enable_dma && !disable_dma) {' \
 	'sm750_shadow_upload(sdev,' \
 	'dst_x1 &= ~1U;' \
 	'dst_x2 = min(ALIGN(dst_x2, 2), 2048U);'; do

@@ -13,6 +13,14 @@
 If EDID cannot be read or supplies no usable mode, the driver falls back to its
 standard catalogue so the connector remains usable.
 
+The driver records the connected monitor's EDID and the active mode when it
+observes a physical disconnect. On reconnect it takes automatic action only if
+the EDID differs. If the new monitor advertises the previous mode, that mode is
+kept. Otherwise, the highest resolution and then highest refresh present in
+both the new EDID and the driver's supported modes is marked preferred. This
+hotplug preference remains in force for that monitor. Reconnecting a larger
+monitor therefore does not automatically upgrade a still-supported lower mode.
+
 The catalogue generally offers 59.94, 60, 70, 72 and 75 Hz. It also includes
 50 Hz where defined. Higher refresh entries are selectively omitted when their
 clock exceeds the driver's current bound. 59.94 and 60 are retained separately

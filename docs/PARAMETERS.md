@@ -17,7 +17,8 @@ build-time defaults.
 | `sharpen` | `0` | Apply fixed 8% sharpening after horizontal soft scaling. |
 | `double_shadow` | `0` | Snapshot source rows and trim reported damage to pixels that really changed. |
 | `disable_hardware_cursor` | `0` | Set to `1` to use a software-rendered cursor instead of the 64x64 hardware plane. |
-| `disable_dma` | `0` | Set to `1` to force CPU uploads. DMA already falls back permanently after verification failure or timeout. |
+| `enable_dma` | `0` | Set to `1` to use optimized eight-row DMA1 uploads. CPU uploads are the conservative default. |
+| `disable_dma` | `0` | Deprecated safety veto. If set, CPU uploads are forced even when `enable_dma=1`. |
 | `shadow_dma_min_bytes` | `4096` | Smallest aligned upload span sent through DMA1. The one-RGB565-scanline default avoids DMA setup and polling overhead for small interactive updates. Valid range is checked at probe. |
 | `preferred_width` | `0` | Preferred exposed mode width; use with height and refresh. |
 | `preferred_height` | `0` | Preferred exposed mode height. |
@@ -64,7 +65,7 @@ make \
   SM750_DRM_DEFAULT_SHARPEN=0 \
   SM750_DRM_DEFAULT_DOUBLE_SHADOW=0 \
   SM750_DRM_DEFAULT_DISABLE_HARDWARE_CURSOR=0 \
-  SM750_DRM_DEFAULT_DISABLE_DMA=0
+  SM750_DRM_DEFAULT_ENABLE_DMA=0
 ```
 
 `SM750_DRM_SCANOUT_DEFAULT` also accepts `xrgb8888` and `rgb565`.

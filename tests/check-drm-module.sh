@@ -15,7 +15,7 @@ modinfo -F parm "$module" | grep '^preferred_refresh:' >/dev/null
 modinfo -F parm "$module" | grep '^scanout_format:' >/dev/null
 modinfo -F parm "$module" | grep '^dither_green_gain:' >/dev/null
 for parameter in edid_only softscale_wide sharpen double_shadow \
-		disable_hardware_cursor disable_dma; do
+		disable_hardware_cursor enable_dma disable_dma; do
 	modinfo -F parm "$module" | grep "^${parameter}:" >/dev/null
 done
 readelf -h "$module" | grep 'ELF64' >/dev/null

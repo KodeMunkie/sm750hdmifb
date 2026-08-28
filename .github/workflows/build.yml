@@ -10,7 +10,7 @@ on:
         type: boolean
         default: false
       release_tag:
-        description: Existing release tag, for example v0.5.0
+        description: Existing release tag, for example v0.5.1
         required: false
         type: string
 
@@ -47,10 +47,10 @@ jobs:
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: sm750hdmifb-0.5.0
+          name: sm750hdmifb-0.5.1
           path: |
-            dist/sm750hdmifb_0.5.0_all.deb
-            dist/sm750hdmifb-0.5.0-source.tar.gz
+            dist/sm750hdmifb_0.5.1_all.deb
+            dist/sm750hdmifb-0.5.1-source.tar.gz
             dist/SHA256SUMS
             dist/RELEASE-AUDIT.txt
 
@@ -63,7 +63,7 @@ jobs:
           test -n "$RELEASE_TAG"
           gh release view "$RELEASE_TAG"
           gh release upload "$RELEASE_TAG" --clobber \
-            dist/sm750hdmifb_0.5.0_all.deb \
-            dist/sm750hdmifb-0.5.0-source.tar.gz \
+            dist/sm750hdmifb_0.5.1_all.deb \
+            dist/sm750hdmifb-0.5.1-source.tar.gz \
             dist/SHA256SUMS \
             dist/RELEASE-AUDIT.txt

@@ -73,6 +73,7 @@
 #define SM750_DRM_CURRENT_LINE PANEL_CURRENT_LINE
 #define SM750_DRM_CURRENT_LINE_MASK PANEL_CURRENT_LINE_LINE_MASK
 #define SM750_DRM_MAX_HEIGHT 1152
+#define SM750_DRM_EDID_SIZE 256
 #define SII9024_MAX_CLOCK_KHZ 165000
 /* Explicit driver modes include the physically tested 2048x1080@75 timing. */
 #define SM750_DRM_MAX_CLOCK_KHZ 179000
@@ -157,8 +158,8 @@ MODULE_PARM_DESC(preferred_refresh, "Optional preferred mode refresh in Hz");
 #ifndef SM750_DRM_DEFAULT_DISABLE_HARDWARE_CURSOR
 #define SM750_DRM_DEFAULT_DISABLE_HARDWARE_CURSOR 0
 #endif
-#ifndef SM750_DRM_DEFAULT_DISABLE_DMA
-#define SM750_DRM_DEFAULT_DISABLE_DMA 0
+#ifndef SM750_DRM_DEFAULT_ENABLE_DMA
+#define SM750_DRM_DEFAULT_ENABLE_DMA 0
 #endif
 
 static char *scanout_format = SM750_DRM_DEFAULT_SCANOUT_FORMAT;
@@ -169,7 +170,8 @@ static bool sharpen = SM750_DRM_DEFAULT_SHARPEN;
 static bool double_shadow = SM750_DRM_DEFAULT_DOUBLE_SHADOW;
 static bool disable_hardware_cursor =
 	SM750_DRM_DEFAULT_DISABLE_HARDWARE_CURSOR;
-static bool disable_dma = SM750_DRM_DEFAULT_DISABLE_DMA;
+static bool enable_dma = SM750_DRM_DEFAULT_ENABLE_DMA;
+static bool disable_dma;
 static unsigned int shadow_dma_min_bytes = 4096;
 module_param(scanout_format, charp, 0444);
 module_param(dither_green_gain, uint, 0444);
@@ -178,6 +180,7 @@ module_param(softscale_wide, bool, 0444);
 module_param(sharpen, bool, 0444);
 module_param(double_shadow, bool, 0444);
 module_param(disable_hardware_cursor, bool, 0444);
+module_param(enable_dma, bool, 0444);
 module_param(disable_dma, bool, 0444);
 module_param(shadow_dma_min_bytes, uint, 0444);
 MODULE_PARM_DESC(scanout_format,
@@ -192,7 +195,9 @@ MODULE_PARM_DESC(double_shadow,
 	"Enable source snapshots and difference-based damage trimming");
 MODULE_PARM_DESC(disable_hardware_cursor,
 	"Disable the hardware cursor plane and use software cursor rendering");
-MODULE_PARM_DESC(disable_dma, "Force CPU shadow uploads instead of DMA1");
+MODULE_PARM_DESC(enable_dma, "Enable optimized eight-row DMA1 shadow uploads");
+MODULE_PARM_DESC(disable_dma,
+	"Deprecated DMA safety veto; overrides enable_dma=1");
 MODULE_PARM_DESC(shadow_dma_min_bytes,
 	"Minimum aligned shadow span for DMA (default 4096 bytes)");
 
@@ -234,6 +239,13 @@ struct sm750_drm_device {
 	size_t dma_pending_size;
 	u32 shadow_source_width;
 	u32 shadow_source_height;
+	u32 disconnected_width;
+	u32 disconnected_height;
+	u32 disconnected_refresh;
+	u32 hotplug_preferred_width;
+	u32 hotplug_preferred_height;
+	u32 hotplug_preferred_refresh;
+	u8 connected_edid[SM750_DRM_EDID_SIZE];
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	u64 vblank_line_ns;
 	u64 vblank_frame_ns;
@@ -251,6 +263,10 @@ struct sm750_drm_device {
 	bool cursor_image_valid;
 	bool shadow_dma_enabled;
 	bool shadow_dma_broken;
+	bool connected_edid_valid;
+	bool monitor_disconnected;
+	bool disconnected_mode_valid;
+	bool hotplug_preferred_valid;
 };
 
 #define to_sm750_drm(drm_dev) container_of(drm_dev, struct sm750_drm_device, drm)
@@ -258,6 +274,9 @@ struct sm750_drm_device {
 	container_of(conn, struct sm750_drm_device, connector)
 #define pipe_to_sm750(display_pipe) \
 	container_of(display_pipe, struct sm750_drm_device, pipe)
+
+static enum drm_mode_status
+sm750_mode_valid(const struct drm_display_mode *mode, u32 vram_size);
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 static u64 sm750_vblank_first_delay_locked(struct sm750_drm_device *sdev)
@@ -693,10 +712,33 @@ static int sm750_add_modes(struct drm_connector *connector,
 	return added;
 }
 
-static void sm750_apply_preferred_mode(struct drm_connector *connector)
+static bool sm750_mark_preferred_mode(struct drm_connector *connector,
+				      unsigned int width,
+				      unsigned int height,
+				      unsigned int refresh,
+				      const char *source)
 {
 	struct drm_display_mode *mode;
 	struct drm_display_mode *preferred = NULL;
+
+	list_for_each_entry(mode, &connector->probed_modes, head) {
+		if (mode->hdisplay == width && mode->vdisplay == height &&
+		    drm_mode_vrefresh(mode) == refresh)
+			preferred = mode;
+	}
+	if (!preferred)
+		return false;
+
+	list_for_each_entry(mode, &connector->probed_modes, head)
+		mode->type &= ~DRM_MODE_TYPE_PREFERRED;
+	preferred->type |= DRM_MODE_TYPE_PREFERRED;
+	drm_info(connector->dev, "%s preferred mode set to %ux%u@%u\n",
+		 source, width, height, refresh);
+	return true;
+}
+
+static void sm750_apply_preferred_mode(struct drm_connector *connector)
+{
 	unsigned int supplied;
 
 	supplied = !!preferred_width + !!preferred_height + !!preferred_refresh;
@@ -708,24 +750,142 @@ static void sm750_apply_preferred_mode(struct drm_connector *connector)
 		return;
 	}
 
-	list_for_each_entry(mode, &connector->probed_modes, head) {
-		if (mode->hdisplay == preferred_width &&
-		    mode->vdisplay == preferred_height &&
-		    drm_mode_vrefresh(mode) == preferred_refresh)
-			preferred = mode;
-	}
-	if (!preferred) {
+	if (!sm750_mark_preferred_mode(connector, preferred_width,
+				       preferred_height, preferred_refresh,
+				       "configured")) {
 		drm_warn(connector->dev,
 			 "requested preferred mode %ux%u@%u is unavailable\n",
 			 preferred_width, preferred_height, preferred_refresh);
+	}
+}
+
+static bool sm750_mode_matches_resolution_refresh(
+		const struct drm_display_mode *mode, unsigned int width,
+		unsigned int height, unsigned int refresh)
+{
+	return mode->hdisplay == width && mode->vdisplay == height &&
+		drm_mode_vrefresh(mode) == refresh;
+}
+
+static bool sm750_catalog_supports_edid_mode(
+		struct sm750_drm_device *sdev,
+		const struct drm_display_mode *edid_mode)
+{
+	const struct drm_display_mode *mode;
+	size_t i;
+
+	if (edid_only)
+		return sm750_mode_valid(edid_mode, sdev->vram_size) == MODE_OK;
+
+	for (i = 0; i < ARRAY_SIZE(sm750_standard_modes); i++) {
+		mode = &sm750_standard_modes[i];
+		if (sm750_mode_matches_resolution_refresh(mode,
+				edid_mode->hdisplay, edid_mode->vdisplay,
+				drm_mode_vrefresh(edid_mode)) &&
+		    sm750_mode_valid(mode, sdev->vram_size) == MODE_OK)
+			return true;
+	}
+	for (i = 0; i < ARRAY_SIZE(sm750_custom_modes); i++) {
+		mode = &sm750_custom_modes[i];
+		if (sm750_mode_matches_resolution_refresh(mode,
+				edid_mode->hdisplay, edid_mode->vdisplay,
+				drm_mode_vrefresh(edid_mode)) &&
+		    sm750_mode_valid(mode, sdev->vram_size) == MODE_OK)
+			return true;
+	}
+	if (softscale_wide)
+		for (i = 0; i < ARRAY_SIZE(sm750_wide_modes); i++) {
+			mode = &sm750_wide_modes[i];
+			if (sm750_mode_matches_resolution_refresh(mode,
+					edid_mode->hdisplay, edid_mode->vdisplay,
+					drm_mode_vrefresh(edid_mode)) &&
+			    sm750_mode_valid(mode, sdev->vram_size) == MODE_OK)
+				return true;
+		}
+
+	return false;
+}
+
+static bool sm750_reconnected_with_different_edid(
+		struct sm750_drm_device *sdev, const struct edid *edid)
+{
+	bool changed = false;
+
+	mutex_lock(&sdev->mode_lock);
+	if (sdev->connected_edid_valid && sdev->monitor_disconnected &&
+	    memcmp(sdev->connected_edid, edid, SM750_DRM_EDID_SIZE))
+		changed = true;
+	memcpy(sdev->connected_edid, edid, SM750_DRM_EDID_SIZE);
+	sdev->connected_edid_valid = true;
+	sdev->monitor_disconnected = false;
+	mutex_unlock(&sdev->mode_lock);
+
+	return changed;
+}
+
+static void sm750_select_reconnected_monitor_mode(
+		struct drm_connector *connector)
+{
+	struct sm750_drm_device *sdev = connector_to_sm750(connector);
+	struct drm_display_mode *mode;
+	struct drm_display_mode *best = NULL;
+	u64 pixels;
+	u64 best_pixels = 0;
+	unsigned int refresh;
+	unsigned int best_refresh = 0;
+
+	if (sdev->disconnected_mode_valid) {
+		list_for_each_entry(mode, &connector->probed_modes, head) {
+			if (sm750_mode_matches_resolution_refresh(mode,
+					sdev->disconnected_width,
+					sdev->disconnected_height,
+					sdev->disconnected_refresh)) {
+				best = mode;
+				break;
+			}
+		}
+	}
+
+	if (!best) {
+		list_for_each_entry(mode, &connector->probed_modes, head) {
+			if (!sm750_catalog_supports_edid_mode(sdev, mode))
+				continue;
+			pixels = (u64)mode->hdisplay * mode->vdisplay;
+			refresh = drm_mode_vrefresh(mode);
+			if (!best || pixels > best_pixels ||
+			    (pixels == best_pixels &&
+			     mode->hdisplay > best->hdisplay) ||
+			    (pixels == best_pixels &&
+			     mode->hdisplay == best->hdisplay &&
+			     refresh > best_refresh)) {
+				best = mode;
+				best_pixels = pixels;
+				best_refresh = refresh;
+			}
+		}
+	}
+
+	if (!best) {
+		sdev->hotplug_preferred_valid = false;
+		drm_warn(connector->dev,
+			 "new monitor EDID has no mutually supported mode\n");
 		return;
 	}
 
-	list_for_each_entry(mode, &connector->probed_modes, head)
-		mode->type &= ~DRM_MODE_TYPE_PREFERRED;
-	preferred->type |= DRM_MODE_TYPE_PREFERRED;
-	drm_info(connector->dev, "preferred mode overridden to %ux%u@%u\n",
-		 preferred_width, preferred_height, preferred_refresh);
+	sdev->hotplug_preferred_width = best->hdisplay;
+	sdev->hotplug_preferred_height = best->vdisplay;
+	sdev->hotplug_preferred_refresh = drm_mode_vrefresh(best);
+	sdev->hotplug_preferred_valid = true;
+}
+
+static void sm750_remove_probed_modes(struct drm_connector *connector)
+{
+	struct drm_display_mode *mode, *next;
+
+	list_for_each_entry_safe(mode, next, &connector->probed_modes, head) {
+		list_del(&mode->head);
+		drm_mode_destroy(connector->dev, mode);
+	}
 }
 
 static struct edid *sm750_connector_read_edid(struct drm_connector *connector)
@@ -759,6 +919,8 @@ static struct edid *sm750_connector_read_edid(struct drm_connector *connector)
 			checksum += ((u8 *)edid)[i];
 		edid->checksum = -checksum;
 	}
+	if (!edid->extensions)
+		memset((u8 *)edid + 128, 0, 128);
 
 	ret = drm_connector_update_edid_property(connector, edid);
 	if (ret)
@@ -781,12 +943,24 @@ static bool sm750_connector_has_resolution(struct drm_connector *connector,
 
 static int sm750_connector_get_modes(struct drm_connector *connector)
 {
+	struct sm750_drm_device *sdev = connector_to_sm750(connector);
 	struct edid *edid;
+	bool changed_monitor = false;
 	int count = 0;
 
 	edid = sm750_connector_read_edid(connector);
-	if (edid_only && edid)
+	if (edid)
+		changed_monitor = sm750_reconnected_with_different_edid(sdev,
+								 edid);
+	if ((edid_only || changed_monitor) && edid)
 		count = drm_add_edid_modes(connector, edid);
+	if (changed_monitor) {
+		sm750_select_reconnected_monitor_mode(connector);
+		if (!edid_only) {
+			sm750_remove_probed_modes(connector);
+			count = 0;
+		}
+	}
 
 	if (edid_only && count > 0) {
 		if (softscale_wide &&
@@ -806,7 +980,39 @@ static int sm750_connector_get_modes(struct drm_connector *connector)
 	}
 	kfree(edid);
 	sm750_apply_preferred_mode(connector);
+	if (sdev->hotplug_preferred_valid &&
+	    !sm750_mark_preferred_mode(connector,
+			sdev->hotplug_preferred_width,
+			sdev->hotplug_preferred_height,
+			sdev->hotplug_preferred_refresh, "hotplug"))
+		drm_warn(connector->dev,
+			 "hotplug preferred mode %ux%u@%u is unavailable\n",
+			 sdev->hotplug_preferred_width,
+			 sdev->hotplug_preferred_height,
+			 sdev->hotplug_preferred_refresh);
 	return count;
+}
+
+static void sm750_remember_disconnected_mode(
+		struct sm750_drm_device *sdev, struct drm_connector *connector)
+{
+	struct drm_crtc_state *crtc_state = NULL;
+
+	if (connector->state && connector->state->crtc)
+		crtc_state = connector->state->crtc->state;
+
+	mutex_lock(&sdev->mode_lock);
+	if (!sdev->monitor_disconnected) {
+		sdev->disconnected_mode_valid = crtc_state && crtc_state->active;
+		if (sdev->disconnected_mode_valid) {
+			sdev->disconnected_width = crtc_state->mode.hdisplay;
+			sdev->disconnected_height = crtc_state->mode.vdisplay;
+			sdev->disconnected_refresh =
+				drm_mode_vrefresh(&crtc_state->mode);
+		}
+	}
+	sdev->monitor_disconnected = true;
+	mutex_unlock(&sdev->mode_lock);
 }
 
 static enum drm_connector_status
@@ -823,6 +1029,8 @@ sm750_connector_detect(struct drm_connector *connector, bool force)
 	mutex_unlock(&sdev->mode_lock);
 	if (ret)
 		return connector_status_unknown;
+	if (!connected && !receiver)
+		sm750_remember_disconnected_mode(sdev, connector);
 
 	return (connected || receiver) ? connector_status_connected :
 		connector_status_disconnected;
@@ -2263,7 +2471,7 @@ static int sm750_pci_probe(struct pci_dev *pdev,
 	if (use_bbdither && dither_green_gain > 100)
 		return dev_err_probe(&pdev->dev, -EINVAL,
 			"dither_green_gain must be between 0 and 100\n");
-	if (!disable_dma && use_shadow &&
+	if (enable_dma && !disable_dma && use_shadow &&
 	    (shadow_dma_min_bytes < sizeof(u32) ||
 	     shadow_dma_min_bytes > SM750_DRM_DMA_STAGING_SIZE ||
 	     !IS_ALIGNED(shadow_dma_min_bytes, sizeof(u32))))
@@ -2387,7 +2595,7 @@ static int sm750_pci_probe(struct pci_dev *pdev,
 			if (ret)
 				return ret;
 		}
-		if (!disable_dma) {
+		if (enable_dma && !disable_dma) {
 			ret = sm750_dma_init(sdev);
 			if (ret) {
 				drm_warn(&sdev->drm,
