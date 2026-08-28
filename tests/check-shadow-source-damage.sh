@@ -23,6 +23,12 @@ for requirement in \
 	'u16 *rgb565_scanout_snapshot;' \
 	'sm750_upload_rgb565_span(sdev,' \
 	'bool rgb565_scanout_snapshot_valid;' \
+	'#define SM750_DRM_MAX_DAMAGE_RECTS 32' \
+	'sm750_damage_lossless_union(' \
+	'sm750_damage_add(rects, &rect_count, &damage)' \
+	'bool shadow_write_pending;' \
+	'sm750_shadow_finish_uploads(sdev);' \
+	'if (sdev->shadow_write_pending)' \
 	'rect->x2 >= sdev->shadow_source_width' \
 	'sdev->shadow_source_snapshot_valid = false;' \
 	'sdev->shadow_source_snapshot_valid = true;' \

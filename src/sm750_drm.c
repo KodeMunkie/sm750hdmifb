@@ -91,6 +91,7 @@
 #define SM750_DRM_DMA_TIMEOUT_US 5000
 #define SM750_DRM_DMA_GUARD_WORDS 4
 #define SM750_DRM_DAMAGE_SPLIT_GAP 64
+#define SM750_DRM_MAX_DAMAGE_RECTS 32
 #define SM750_DRM_SHARPEN_PERCENT 8
 #define SM750_DRM_HWC_ADDRESS PANEL_HWC_ADDRESS
 #define SM750_DRM_HWC_ADDRESS_ENABLE PANEL_HWC_ADDRESS_ENABLE
@@ -265,6 +266,7 @@ struct sm750_drm_device {
 	bool cursor_image_valid;
 	bool shadow_dma_enabled;
 	bool shadow_dma_broken;
+	bool shadow_write_pending;
 	bool connected_edid_valid;
 	bool monitor_disconnected;
 	bool disconnected_mode_valid;
@@ -1323,6 +1325,10 @@ static void sm750_shadow_upload(struct sm750_drm_device *sdev,
 		IS_ALIGNED(destination, sizeof(u32)) &&
 		IS_ALIGNED(size, sizeof(u32));
 
+	if (!size)
+		return;
+	sdev->shadow_write_pending = true;
+
 	if (dma_eligible && sdev->dma_pending_size) {
 		if (destination == sdev->dma_pending_destination +
 				sdev->dma_pending_size &&
@@ -1350,6 +1356,14 @@ static void sm750_shadow_upload(struct sm750_drm_device *sdev,
 	}
 	sm750_dma_flush_pending(sdev);
 	memcpy_toio(sdev->vram + destination, source, size);
+}
+
+static void sm750_shadow_finish_uploads(struct sm750_drm_device *sdev)
+{
+	sm750_dma_flush_pending(sdev);
+	if (sdev->shadow_write_pending)
+		wmb();
+	sdev->shadow_write_pending = false;
 }
 
 static int sm750_dma_init(struct sm750_drm_device *sdev)
@@ -1858,9 +1872,74 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 {
 	mutex_lock(&sdev->shadow_lock);
 	sm750_shadow_rect_locked(sdev, plane_state, rect);
-	sm750_dma_flush_pending(sdev);
-	wmb();
+	sm750_shadow_finish_uploads(sdev);
 	mutex_unlock(&sdev->shadow_lock);
+}
+
+static bool sm750_damage_lossless_union(const struct drm_rect *first,
+					const struct drm_rect *second,
+					struct drm_rect *result)
+{
+	if (first->x1 <= second->x1 && first->y1 <= second->y1 &&
+	    first->x2 >= second->x2 && first->y2 >= second->y2) {
+		*result = *first;
+		return true;
+	}
+	if (second->x1 <= first->x1 && second->y1 <= first->y1 &&
+	    second->x2 >= first->x2 && second->y2 >= first->y2) {
+		*result = *second;
+		return true;
+	}
+	if (first->y1 == second->y1 && first->y2 == second->y2 &&
+	    first->x1 <= second->x2 && second->x1 <= first->x2) {
+		result->x1 = min(first->x1, second->x1);
+		result->x2 = max(first->x2, second->x2);
+		result->y1 = first->y1;
+		result->y2 = first->y2;
+		return true;
+	}
+	if (first->x1 == second->x1 && first->x2 == second->x2 &&
+	    first->y1 <= second->y2 && second->y1 <= first->y2) {
+		result->x1 = first->x1;
+		result->x2 = first->x2;
+		result->y1 = min(first->y1, second->y1);
+		result->y2 = max(first->y2, second->y2);
+		return true;
+	}
+	return false;
+}
+
+static bool sm750_damage_add(struct drm_rect *rects, unsigned int *count,
+			     const struct drm_rect *damage)
+{
+	struct drm_rect candidate = *damage;
+	struct drm_rect merged;
+	unsigned int i = 0;
+
+	while (i < *count) {
+		if (!sm750_damage_lossless_union(&candidate, &rects[i], &merged)) {
+			i++;
+			continue;
+		}
+		candidate = merged;
+		rects[i] = rects[--*count];
+		i = 0;
+	}
+	if (*count == SM750_DRM_MAX_DAMAGE_RECTS)
+		return false;
+	rects[(*count)++] = candidate;
+	return true;
+}
+
+static void sm750_process_damage_rects(struct sm750_drm_device *sdev,
+				       struct drm_plane_state *state,
+				       struct drm_rect *rects,
+				       unsigned int count)
+{
+	unsigned int i;
+
+	for (i = 0; i < count; i++)
+		sm750_shadow_rect_locked(sdev, state, &rects[i]);
 }
 
 static void sm750_cursor_disable_locked(struct sm750_drm_device *sdev)
@@ -2341,16 +2420,23 @@ static void sm750_pipe_update(struct drm_simple_display_pipe *pipe,
 	struct sm750_drm_device *sdev = pipe_to_sm750(pipe);
 	struct drm_plane_state *state = pipe->plane.state;
 	struct drm_atomic_helper_damage_iter iter;
+	struct drm_rect rects[SM750_DRM_MAX_DAMAGE_RECTS];
 	struct drm_rect damage;
+	unsigned int rect_count = 0;
 	u32 offset;
 
 	if (sdev->shadow_scanout) {
 		mutex_lock(&sdev->shadow_lock);
 		drm_atomic_helper_damage_iter_init(&iter, old_plane_state, state);
-		drm_atomic_for_each_plane_damage(&iter, &damage)
-			sm750_shadow_rect_locked(sdev, state, &damage);
-		sm750_dma_flush_pending(sdev);
-		wmb();
+		drm_atomic_for_each_plane_damage(&iter, &damage) {
+			if (sm750_damage_add(rects, &rect_count, &damage))
+				continue;
+			sm750_process_damage_rects(sdev, state, rects, rect_count);
+			rect_count = 0;
+			sm750_damage_add(rects, &rect_count, &damage);
+		}
+		sm750_process_damage_rects(sdev, state, rects, rect_count);
+		sm750_shadow_finish_uploads(sdev);
 		mutex_unlock(&sdev->shadow_lock);
 	} else if (state->fb &&
 		 !sm750_scanout_offset(state->fb, &offset))
