@@ -1609,6 +1609,8 @@ static void sm750_upload_rgb565_span(struct sm750_drm_device *sdev,
 			source, count * sizeof(*source));
 		return;
 	}
+	if (!memcmp(source, snapshot, count * sizeof(*source)))
+		return;
 
 	while (sm750_next_changed_u16_run(source, snapshot, count, &cursor,
 					  &run_x1, &run_x2)) {
@@ -1782,6 +1784,9 @@ static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
 							 src_x1, src_x2);
 				continue;
 			}
+			if (!memcmp(source_row + src_x1, snapshot + src_x1,
+				    (src_x2 - src_x1) * sizeof(*source_row)))
+				continue;
 			x = src_x1;
 			while (x < src_x2) {
 				unsigned int run_x1;

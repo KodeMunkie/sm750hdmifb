@@ -18,6 +18,8 @@ for requirement in \
 	'sm750_next_changed_u32_run(source_row, snapshot,' \
 	'sm750_next_changed_u16_run(source, snapshot, count,' \
 	'(block_end - x) * sizeof(*source)' \
+	'if (!memcmp(source_row + src_x1, snapshot + src_x1,' \
+	'if (!memcmp(source, snapshot, count * sizeof(*source)))' \
 	'memcpy(snapshot + run_x1, source_row + run_x1,' \
 	'sm750_softscale_upload_span(sdev, snapshot, y,' \
 	'u16 *rgb565_scanout_snapshot;' \
