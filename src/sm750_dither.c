@@ -63,15 +63,16 @@ int sm750_dither_init(struct sm750_dither *ctx,
 }
 
 static __always_inline u16 sm750_dither_pixel(
-			      const struct sm750_dither *ctx, u32 pixel,
-			      unsigned int position)
+			      const u8 *quantise5,
+			      const u8 *quantise6_green, u32 pixel,
+			      unsigned int x_phase)
 {
-	position &= 63U;
+	unsigned int offset = (x_phase & 7U) << 8;
 	unsigned int red =
-		ctx->quantise5[position][(pixel >> 16) & 0xffU];
+		quantise5[offset + ((pixel >> 16) & 0xffU)];
 	unsigned int green =
-		ctx->quantise6_green[position][(pixel >> 8) & 0xffU];
-	unsigned int blue = ctx->quantise5[position][pixel & 0xffU];
+		quantise6_green[offset + ((pixel >> 8) & 0xffU)];
+	unsigned int blue = quantise5[offset + (pixel & 0xffU)];
 
 	return (red << 11) | (green << 5) | blue;
 }
@@ -211,7 +212,8 @@ static __always_inline u32 sm750_scale_77_to_64_pixel(const u32 *src,
 	return sm750_scale_77_next(src, &state);
 }
 
-void sm750_dither_xrgb8888_to_rgb565(const struct sm750_dither *ctx,
+void sm750_dither_xrgb8888_to_rgb565(
+				     const struct sm750_dither *ctx,
 				     u16 *dst, size_t dst_stride,
 				     const u32 *src, size_t src_stride,
 				     unsigned int x_origin,
@@ -223,14 +225,17 @@ void sm750_dither_xrgb8888_to_rgb565(const struct sm750_dither *ctx,
 
 	for (y = 0; y < height; y++) {
 		unsigned int dither_row = ((y_origin + y) & 7U) << 3;
+		const u8 *quantise5 = (const u8 *)ctx->quantise5 +
+			(dither_row << 8);
+		const u8 *quantise6_green =
+			(const u8 *)ctx->quantise6_green + (dither_row << 8);
 		unsigned int x;
 
 		for (x = 0; x < width; x++) {
 			u32 pixel = src[x];
-			unsigned int position = dither_row |
-				((x_origin + x) & 7U);
 
-			dst[x] = sm750_dither_pixel(ctx, pixel, position);
+			dst[x] = sm750_dither_pixel(quantise5,
+				quantise6_green, pixel, x_origin + x);
 		}
 		src += src_stride;
 		dst += dst_stride;
@@ -245,6 +250,10 @@ void sm750_dither_scale_5_to_4_xrgb8888_to_rgb565(
 				     unsigned int dst_x2)
 {
 	unsigned int dither_row = (y_origin & 7U) << 3;
+	const u8 *quantise5 = (const u8 *)ctx->quantise5 +
+		(dither_row << 8);
+	const u8 *quantise6_green = (const u8 *)ctx->quantise6_green +
+		(dither_row << 8);
 	struct sm750_scale_5_state state;
 	unsigned int x;
 
@@ -252,8 +261,8 @@ void sm750_dither_scale_5_to_4_xrgb8888_to_rgb565(
 	for (x = dst_x1; x < dst_x2; x++) {
 		u32 pixel = sm750_scale_5_next(src, &state);
 
-		dst[x] = sm750_dither_pixel(ctx, pixel,
-					     dither_row | (x & 7U));
+		dst[x] = sm750_dither_pixel(quantise5, quantise6_green,
+					     pixel, x);
 	}
 }
 
@@ -265,6 +274,10 @@ void sm750_dither_scale_77_to_64_xrgb8888_to_rgb565(
 				     unsigned int dst_x2)
 {
 	unsigned int dither_row = (y_origin & 7U) << 3;
+	const u8 *quantise5 = (const u8 *)ctx->quantise5 +
+		(dither_row << 8);
+	const u8 *quantise6_green = (const u8 *)ctx->quantise6_green +
+		(dither_row << 8);
 	struct sm750_scale_77_state state;
 	unsigned int x;
 
@@ -272,8 +285,8 @@ void sm750_dither_scale_77_to_64_xrgb8888_to_rgb565(
 	for (x = dst_x1; x < dst_x2; x++) {
 		u32 pixel = sm750_scale_77_next(src, &state);
 
-		dst[x] = sm750_dither_pixel(ctx, pixel,
-					     dither_row | (x & 7U));
+		dst[x] = sm750_dither_pixel(quantise5, quantise6_green,
+					     pixel, x);
 	}
 }
 
@@ -379,11 +392,15 @@ void sm750_dither_scale_xrgb8888_to_rgb565(
 				     unsigned int dst_x2)
 {
 	unsigned int dither_row = (y_origin & 7U) << 3;
+	const u8 *quantise5 = (const u8 *)ctx->quantise5 +
+		(dither_row << 8);
+	const u8 *quantise6_green = (const u8 *)ctx->quantise6_green +
+		(dither_row << 8);
 	unsigned int x;
 
 	for (x = dst_x1; x < dst_x2; x++) {
-		dst[x] = sm750_dither_pixel(ctx, sm750_scale_map_pixel(src, map, x),
-					     dither_row | (x & 7U));
+		dst[x] = sm750_dither_pixel(quantise5, quantise6_green,
+			sm750_scale_map_pixel(src, map, x), x);
 	}
 }
 
@@ -421,6 +438,10 @@ void sm750_dither_scale_5_to_4_sharpen_xrgb8888_to_rgb565(
 				     unsigned int dst_x2)
 {
 	unsigned int dither_row = (y_origin & 7U) << 3;
+	const u8 *quantise5 = (const u8 *)ctx->quantise5 +
+		(dither_row << 8);
+	const u8 *quantise6_green = (const u8 *)ctx->quantise6_green +
+		(dither_row << 8);
 	struct sm750_scale_5_state state;
 	u32 left;
 	u32 center;
@@ -444,8 +465,8 @@ void sm750_dither_scale_5_to_4_sharpen_xrgb8888_to_rgb565(
 			sm750_sharpen_channel_8(ctx, left & 0xffU,
 				center & 0xffU, right & 0xffU);
 
-		dst[x] = sm750_dither_pixel(ctx, pixel,
-					     dither_row | (x & 7U));
+		dst[x] = sm750_dither_pixel(quantise5, quantise6_green,
+					     pixel, x);
 		left = center;
 		center = right;
 		right = x + 2 < SM750_DITHER_SCALE_MAX_SAMPLES ?
@@ -461,6 +482,10 @@ void sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(
 				     unsigned int dst_x2)
 {
 	unsigned int dither_row = (y_origin & 7U) << 3;
+	const u8 *quantise5 = (const u8 *)ctx->quantise5 +
+		(dither_row << 8);
+	const u8 *quantise6_green = (const u8 *)ctx->quantise6_green +
+		(dither_row << 8);
 	struct sm750_scale_77_state state;
 	u32 left;
 	u32 center;
@@ -484,8 +509,8 @@ void sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(
 			sm750_sharpen_channel_8(ctx, left & 0xffU,
 				center & 0xffU, right & 0xffU);
 
-		dst[x] = sm750_dither_pixel(ctx, pixel,
-					     dither_row | (x & 7U));
+		dst[x] = sm750_dither_pixel(quantise5, quantise6_green,
+					     pixel, x);
 		left = center;
 		center = right;
 		right = x + 2 < SM750_DITHER_SCALE_MAX_SAMPLES ?
@@ -529,6 +554,10 @@ void sm750_dither_scale_sharpen_xrgb8888_to_rgb565(
 				     unsigned int dst_x2)
 {
 	unsigned int dither_row = (y_origin & 7U) << 3;
+	const u8 *quantise5 = (const u8 *)ctx->quantise5 +
+		(dither_row << 8);
+	const u8 *quantise6_green = (const u8 *)ctx->quantise6_green +
+		(dither_row << 8);
 	unsigned int calc_x1 = dst_x1 ? dst_x1 - 1 : 0;
 	unsigned int calc_x2 = min(dst_x2 + 1,
 				   (unsigned int)SM750_DITHER_SCALE_MAX_SAMPLES);
@@ -549,7 +578,7 @@ void sm750_dither_scale_sharpen_xrgb8888_to_rgb565(
 			sm750_sharpen_channel_8(ctx, left & 0xffU,
 				center & 0xffU, right & 0xffU);
 
-		dst[x] = sm750_dither_pixel(ctx, pixel,
-					     dither_row | (x & 7U));
+		dst[x] = sm750_dither_pixel(quantise5, quantise6_green,
+					     pixel, x);
 	}
 }
