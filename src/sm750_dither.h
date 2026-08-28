@@ -11,6 +11,7 @@
 struct sm750_dither {
 	u8 quantise5[64][256];
 	u8 quantise6_green[64][256];
+	s8 sharpen8_adjustment[1021];
 };
 
 struct sm750_dither_scale_sample {
@@ -77,14 +78,12 @@ void sm750_dither_scale_sharpen_xrgb8888_to_rgb565(
 				     const struct sm750_dither_scale_map *map,
 				     unsigned int src_width,
 				     unsigned int dst_x1,
-					     unsigned int dst_x2,
-					     unsigned int sharpen_percent);
+				     unsigned int dst_x2);
 void sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(
 				     const struct sm750_dither *ctx,
 				     u16 *dst, const u32 *src,
 				     unsigned int y_origin,
 				     unsigned int dst_x1,
-				     unsigned int dst_x2,
-				     unsigned int sharpen_percent);
+				     unsigned int dst_x2);
 
 #endif

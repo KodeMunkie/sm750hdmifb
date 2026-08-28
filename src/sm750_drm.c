@@ -1519,14 +1519,13 @@ static void sm750_softscale_upload_span(struct sm750_drm_device *sdev,
 		if (sdev->softscale_source_width == 2464)
 			sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(
 				sdev->dither, sdev->dither_output_line,
-				scale_source, y, dst_x1, dst_x2,
-				SM750_DRM_SHARPEN_PERCENT);
+				scale_source, y, dst_x1, dst_x2);
 		else
 			sm750_dither_scale_sharpen_xrgb8888_to_rgb565(
 				sdev->dither, sdev->dither_output_line,
 				sdev->softscale_output_line, scale_source, y,
 				sdev->dither_scale_map, sdev->softscale_source_width,
-				dst_x1, dst_x2, SM750_DRM_SHARPEN_PERCENT);
+				dst_x1, dst_x2);
 	} else if (sdev->softscale_source_width == 2560) {
 		sm750_dither_scale_5_to_4_xrgb8888_to_rgb565(sdev->dither,
 			sdev->dither_output_line, scale_source, y, dst_x1, dst_x2);

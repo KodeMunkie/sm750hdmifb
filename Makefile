@@ -8,9 +8,11 @@ all:
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(CURDIR)/src clean
-	$(RM) tests/check-vblank tests/test-bbdither-rgb565
+	$(RM) tests/check-vblank tests/test-bbdither-rgb565 \
+		tests/test-scale-optimizations
 
-check: all tests/check-vblank tests/test-bbdither-rgb565
+check: all tests/check-vblank tests/test-bbdither-rgb565 \
+		tests/test-scale-optimizations
 	./tests/check-drm-module.sh src/sm750hdmidrm.ko
 	./tests/check-drm-policy.sh
 	./tests/check-drm-xorg-config.sh
@@ -21,6 +23,7 @@ check: all tests/check-vblank tests/test-bbdither-rgb565
 	./tests/check-shadow-dma.sh
 	./tests/check-shadow-source-damage.sh
 	./tests/test-bbdither-rgb565
+	./tests/test-scale-optimizations
 
 check-all-kernels:
 	./tests/build-all-kernels.sh
@@ -34,6 +37,9 @@ tests/check-vblank: tests/check-vblank.c
 
 tests/test-bbdither-rgb565: tests/test-bbdither-rgb565.c tools/bbdither-rgb565.c tools/bbdither-rgb565.h
 	$(CC) -O3 -Wall -Wextra -Werror -Itools -o $@ tests/test-bbdither-rgb565.c tools/bbdither-rgb565.c
+
+tests/test-scale-optimizations: tests/test-scale-optimizations.c
+	$(CC) -O3 -Wall -Wextra -Werror -o $@ $<
 
 package:
 	./build-package.sh

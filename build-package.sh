@@ -81,6 +81,7 @@ tar -C "${project_dir}" -czf "${source_archive}" \
 	--exclude='src/modules.order' \
 	--exclude='tests/check-vblank' \
 	--exclude='tests/test-bbdither-rgb565' \
+	--exclude='tests/test-scale-optimizations' \
 	.gitignore LICENSE Makefile README.md build-package.sh dkms.conf \
 	src docs tests tools packaging .github
 

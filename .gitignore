@@ -13,6 +13,7 @@ modules.order
 /dist/
 /tests/check-vblank
 /tests/test-bbdither-rgb565
+/tests/test-scale-optimizations
 
 # Editor and desktop files
 *~

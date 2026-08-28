@@ -5,11 +5,16 @@ set -euo pipefail
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 source_file=$project_dir/src/sm750_drm.c
 dither_file=$project_dir/src/sm750_dither.c
+dither_header=$project_dir/src/sm750_dither.h
 
 for requirement in \
 	'sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(' \
-	'if (sdev->softscale_source_width == 2464)'; do
-	grep -F "$requirement" "$source_file" "$dither_file" >/dev/null || {
+	'if (sdev->softscale_source_width == 2464)' \
+	'sharpen8_adjustment[1021]' \
+	'sm750_weighted_pixel_3(' \
+	'sm750_scale_77_next('; do
+	grep -F "$requirement" "$source_file" "$dither_file" \
+		"$dither_header" >/dev/null || {
 		echo "Missing fused 2464 sharpen requirement: $requirement" >&2
 		exit 1
 	}
