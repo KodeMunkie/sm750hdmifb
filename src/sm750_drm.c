@@ -1632,8 +1632,8 @@ static void sm750_softscale_expand_hardware_damage(unsigned int *dst_x1,
 	/*
 	 * Hardware-verified SM750 partial-update quirk: narrow softscaled damage
 	 * can leave its final destination pixel stale even though ideal area-filter
-	 * bounds say that pixel is covered.  The published boundary behaviour is
-	 * not reliable here.  Keep one extra destination pixel on both sides.
+	 * bounds say that pixel is covered.  The official SM750 specification is
+	 * wrong for this boundary case.  Keep one extra destination pixel per side.
 	 * Do not remove this margin as an apparent mathematical off-by-one.
 	 */
 	if (*dst_x1)

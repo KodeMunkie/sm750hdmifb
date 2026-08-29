@@ -8,6 +8,7 @@ source_file=$project_dir/src/sm750_drm.c
 for requirement in \
 	'sm750_softscale_expand_hardware_damage(' \
 	'sm750_softscale_expand_hardware_damage(&dst_x1, &dst_x2);' \
+	'The official SM750 specification is' \
 	'Do not remove this margin as an apparent mathematical off-by-one.'; do
 	grep -F "$requirement" "$source_file" >/dev/null || {
 		echo "Missing verified partial-damage margin: $requirement" >&2
