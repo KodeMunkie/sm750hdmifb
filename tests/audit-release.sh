@@ -5,8 +5,8 @@ set -euo pipefail
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 dist_dir=$project_dir/dist
 module=$project_dir/src/sm750hdmidrm.ko
-deb=$dist_dir/sm750hdmifb_0.5.2_all.deb
-source_archive=$dist_dir/sm750hdmifb-0.5.2-source.tar.gz
+deb=$dist_dir/sm750hdmifb_0.5.3_all.deb
+source_archive=$dist_dir/sm750hdmifb-0.5.3-source.tar.gz
 report=$dist_dir/RELEASE-AUDIT.txt
 
 for required in "$module" "$deb" "$source_archive" "$project_dir/LICENSE"; do
@@ -73,8 +73,8 @@ mkdir -p "$dist_dir"
 	tar -tzf "$source_archive"
 	echo
 	echo "CHECKSUMS"
-	(cd "$dist_dir" && sha256sum sm750hdmifb_0.5.2_all.deb \
-		sm750hdmifb-0.5.2-source.tar.gz)
+	(cd "$dist_dir" && sha256sum sm750hdmifb_0.5.3_all.deb \
+		sm750hdmifb-0.5.3-source.tar.gz)
 } >"$report"
 
 echo "Release audit passed: $report"
