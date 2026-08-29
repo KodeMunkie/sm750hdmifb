@@ -430,6 +430,56 @@ static __always_inline u8 sm750_sharpen_channel_8(
 		(int)center + adjustment[index], 0, 255);
 }
 
+static __always_inline u16 sm750_sharpen_dither_pixel_8(
+				  const struct sm750_dither *ctx,
+				  const u8 *quantise5,
+				  const u8 *quantise6_green,
+				  u32 left, u32 center, u32 right,
+				  unsigned int x_phase)
+{
+	u32 pixel =
+		sm750_sharpen_channel_8(ctx, (left >> 16) & 0xffU,
+			(center >> 16) & 0xffU, (right >> 16) & 0xffU) << 16 |
+		sm750_sharpen_channel_8(ctx, (left >> 8) & 0xffU,
+			(center >> 8) & 0xffU, (right >> 8) & 0xffU) << 8 |
+		sm750_sharpen_channel_8(ctx, left & 0xffU,
+			center & 0xffU, right & 0xffU);
+
+	return sm750_dither_pixel(quantise5, quantise6_green, pixel, x_phase);
+}
+
+/*
+ * Ordered dithering repeats every eight output pixels.  Keep this scheduler
+ * independent of the scale ratio: each exact scaler supplies only its own
+ * next-pixel expression while sharing alignment, edge and phase handling.
+ */
+#define SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, phase) do { \
+	dst[x] = sm750_sharpen_dither_pixel_8(ctx, quantise5, \
+		quantise6_green, left, center, right, (phase)); \
+	left = center; \
+	center = right; \
+	x++; \
+	right = x + 1 < SM750_DITHER_SCALE_MAX_SAMPLES ? \
+		(next_pixel) : center; \
+} while (0)
+
+#define SM750_RUN_SHARPEN_DITHER_8(next_pixel) do { \
+	while (x < dst_x2 && (x & 7U)) \
+		SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, x); \
+	while (x + 8 <= dst_x2) { \
+		SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, 0U); \
+		SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, 1U); \
+		SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, 2U); \
+		SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, 3U); \
+		SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, 4U); \
+		SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, 5U); \
+		SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, 6U); \
+		SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, 7U); \
+	} \
+	while (x < dst_x2) \
+		SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, x); \
+} while (0)
+
 void sm750_dither_scale_5_to_4_sharpen_xrgb8888_to_rgb565(
 				     const struct sm750_dither *ctx,
 				     u16 *dst, const u32 *src,
@@ -456,22 +506,8 @@ void sm750_dither_scale_5_to_4_sharpen_xrgb8888_to_rgb565(
 	right = dst_x1 + 1 < SM750_DITHER_SCALE_MAX_SAMPLES ?
 		sm750_scale_5_next(src, &state) : center;
 
-	for (x = dst_x1; x < dst_x2; x++) {
-		u32 pixel =
-			sm750_sharpen_channel_8(ctx, (left >> 16) & 0xffU,
-				(center >> 16) & 0xffU, (right >> 16) & 0xffU) << 16 |
-			sm750_sharpen_channel_8(ctx, (left >> 8) & 0xffU,
-				(center >> 8) & 0xffU, (right >> 8) & 0xffU) << 8 |
-			sm750_sharpen_channel_8(ctx, left & 0xffU,
-				center & 0xffU, right & 0xffU);
-
-		dst[x] = sm750_dither_pixel(quantise5, quantise6_green,
-					     pixel, x);
-		left = center;
-		center = right;
-		right = x + 2 < SM750_DITHER_SCALE_MAX_SAMPLES ?
-			sm750_scale_5_next(src, &state) : center;
-	}
+	x = dst_x1;
+	SM750_RUN_SHARPEN_DITHER_8(sm750_scale_5_next(src, &state));
 }
 
 void sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(
@@ -500,23 +536,12 @@ void sm750_dither_scale_77_to_64_sharpen_xrgb8888_to_rgb565(
 	right = dst_x1 + 1 < SM750_DITHER_SCALE_MAX_SAMPLES ?
 		sm750_scale_77_next(src, &state) : center;
 
-	for (x = dst_x1; x < dst_x2; x++) {
-		u32 pixel =
-			sm750_sharpen_channel_8(ctx, (left >> 16) & 0xffU,
-				(center >> 16) & 0xffU, (right >> 16) & 0xffU) << 16 |
-			sm750_sharpen_channel_8(ctx, (left >> 8) & 0xffU,
-				(center >> 8) & 0xffU, (right >> 8) & 0xffU) << 8 |
-			sm750_sharpen_channel_8(ctx, left & 0xffU,
-				center & 0xffU, right & 0xffU);
-
-		dst[x] = sm750_dither_pixel(quantise5, quantise6_green,
-					     pixel, x);
-		left = center;
-		center = right;
-		right = x + 2 < SM750_DITHER_SCALE_MAX_SAMPLES ?
-			sm750_scale_77_next(src, &state) : center;
-	}
+	x = dst_x1;
+	SM750_RUN_SHARPEN_DITHER_8(sm750_scale_77_next(src, &state));
 }
+
+#undef SM750_RUN_SHARPEN_DITHER_8
+#undef SM750_EMIT_SHARPEN_DITHER_PIXEL
 
 void sm750_sharpen_xrgb8888(u32 *dst, const u32 *src,
 			   unsigned int dst_x1,

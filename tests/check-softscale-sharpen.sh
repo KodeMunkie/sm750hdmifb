@@ -17,7 +17,12 @@ for requirement in \
 	'sm750_weighted_pixel_3(' \
 	'sm750_scale_77_next(' \
 	'sm750_dither_scale_5_to_4_sharpen_xrgb8888_to_rgb565(' \
-	'sm750_scale_5_next('; do
+	'sm750_scale_5_next(' \
+	'sm750_sharpen_dither_pixel_8(' \
+	'SM750_RUN_SHARPEN_DITHER_8(sm750_scale_5_next(src, &state));' \
+	'SM750_RUN_SHARPEN_DITHER_8(sm750_scale_77_next(src, &state));' \
+	'SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, 0U);' \
+	'SM750_EMIT_SHARPEN_DITHER_PIXEL(next_pixel, 7U);'; do
 	grep -F "$requirement" "$source_file" "$dither_file" \
 		"$dither_header" >/dev/null || {
 		echo "Missing fused 2464 sharpen requirement: $requirement" >&2

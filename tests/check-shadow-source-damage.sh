@@ -29,6 +29,12 @@ for requirement in \
 	'sm750_upload_rgb565_span(sdev,' \
 	'bool rgb565_scanout_snapshot_valid;' \
 	'#define SM750_DRM_MAX_DAMAGE_RECTS 32' \
+	'#define SM750_DRM_MAX_ROW_RUNS 8' \
+	'#define SM750_DRM_DENSE_RUN_NUMERATOR 3' \
+	'#define SM750_DRM_DENSE_RUN_DENOMINATOR 4' \
+	'sm750_softscale_upload_changed_row(' \
+	'changed_pixels * SM750_DRM_DENSE_RUN_DENOMINATOR >=' \
+	'if (sdev->rgb565_scanout_snapshot_valid) {' \
 	'sm750_damage_lossless_union(' \
 	'sm750_damage_add(rects, &rect_count, &damage)' \
 	'bool shadow_write_pending;' \

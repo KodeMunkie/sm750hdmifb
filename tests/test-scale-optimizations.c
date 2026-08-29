@@ -112,8 +112,139 @@ static uint32_t optimized_5(const uint32_t *src, struct scale_5_state *state)
 	return pixel;
 }
 
+static unsigned int sharpen_channel_8(unsigned int left,
+				      unsigned int center,
+				      unsigned int right)
+{
+	int detail = 2 * (int)center - (int)left - (int)right;
+	int adjustment = detail * 8;
+	int value;
+
+	adjustment = adjustment >= 0 ?
+		(adjustment + 50) / 100 : (adjustment - 50) / 100;
+	value = (int)center + adjustment;
+	return value < 0 ? 0U : value > 255 ? 255U : (unsigned int)value;
+}
+
+static uint32_t sharpen_pixel_8(uint32_t left, uint32_t center,
+				uint32_t right)
+{
+	return sharpen_channel_8(left >> 16 & 0xffU, center >> 16 & 0xffU,
+			right >> 16 & 0xffU) << 16 |
+		sharpen_channel_8(left >> 8 & 0xffU, center >> 8 & 0xffU,
+			right >> 8 & 0xffU) << 8 |
+		sharpen_channel_8(left & 0xffU, center & 0xffU,
+			right & 0xffU);
+}
+
+static int check_unrolled_77_span(const uint32_t *src,
+				  unsigned int start, unsigned int end)
+{
+	uint32_t actual[OUTPUT_WIDTH];
+	struct scale_77_state state = { start * 77U };
+	uint32_t center = optimized_77(src, &state);
+	uint32_t left = start ? reference_77(src, start - 1) : center;
+	uint32_t right = start + 1 < OUTPUT_WIDTH ?
+		optimized_77(src, &state) : center;
+	unsigned int x = start;
+	unsigned int i;
+
+#define EMIT_MODEL_77(phase) do { \
+	actual[x] = sharpen_pixel_8(left, center, right) | \
+		(((phase) & 7U) << 24); \
+	left = center; \
+	center = right; \
+	x++; \
+	right = x + 1 < OUTPUT_WIDTH ? optimized_77(src, &state) : center; \
+} while (0)
+	while (x < end && (x & 7U))
+		EMIT_MODEL_77(x);
+	while (x + 8 <= end) {
+		EMIT_MODEL_77(0U);
+		EMIT_MODEL_77(1U);
+		EMIT_MODEL_77(2U);
+		EMIT_MODEL_77(3U);
+		EMIT_MODEL_77(4U);
+		EMIT_MODEL_77(5U);
+		EMIT_MODEL_77(6U);
+		EMIT_MODEL_77(7U);
+	}
+	while (x < end)
+		EMIT_MODEL_77(x);
+#undef EMIT_MODEL_77
+
+	for (i = start; i < end; i++) {
+		uint32_t expected_center = reference_77(src, i);
+		uint32_t expected_left = i ? reference_77(src, i - 1) :
+			expected_center;
+		uint32_t expected_right = i + 1 < OUTPUT_WIDTH ?
+			reference_77(src, i + 1) : expected_center;
+		uint32_t expected = sharpen_pixel_8(expected_left,
+			expected_center, expected_right) | ((i & 7U) << 24);
+
+		if (actual[i] != expected)
+			return 1;
+	}
+	return 0;
+}
+
+static int check_unrolled_5_span(const uint32_t *src,
+				 unsigned int start, unsigned int end)
+{
+	uint32_t actual[OUTPUT_WIDTH];
+	struct scale_5_state state = { start * 5U };
+	uint32_t center = optimized_5(src, &state);
+	uint32_t left = start ? reference_5(src, start - 1) : center;
+	uint32_t right = start + 1 < OUTPUT_WIDTH ?
+		optimized_5(src, &state) : center;
+	unsigned int x = start;
+	unsigned int i;
+
+#define EMIT_MODEL_5(phase) do { \
+	actual[x] = sharpen_pixel_8(left, center, right) | \
+		(((phase) & 7U) << 24); \
+	left = center; \
+	center = right; \
+	x++; \
+	right = x + 1 < OUTPUT_WIDTH ? optimized_5(src, &state) : center; \
+} while (0)
+	while (x < end && (x & 7U))
+		EMIT_MODEL_5(x);
+	while (x + 8 <= end) {
+		EMIT_MODEL_5(0U);
+		EMIT_MODEL_5(1U);
+		EMIT_MODEL_5(2U);
+		EMIT_MODEL_5(3U);
+		EMIT_MODEL_5(4U);
+		EMIT_MODEL_5(5U);
+		EMIT_MODEL_5(6U);
+		EMIT_MODEL_5(7U);
+	}
+	while (x < end)
+		EMIT_MODEL_5(x);
+#undef EMIT_MODEL_5
+
+	for (i = start; i < end; i++) {
+		uint32_t expected_center = reference_5(src, i);
+		uint32_t expected_left = i ? reference_5(src, i - 1) :
+			expected_center;
+		uint32_t expected_right = i + 1 < OUTPUT_WIDTH ?
+			reference_5(src, i + 1) : expected_center;
+		uint32_t expected = sharpen_pixel_8(expected_left,
+			expected_center, expected_right) | ((i & 7U) << 24);
+
+		if (actual[i] != expected)
+			return 1;
+	}
+	return 0;
+}
+
 int main(void)
 {
+	static const unsigned int spans[][2] = {
+		{ 0, OUTPUT_WIDTH }, { 3, 7 }, { 5, 2041 },
+		{ 1023, 1034 }, { 2040, OUTPUT_WIDTH },
+	};
 	uint32_t source_77[WIDTH_77];
 	uint32_t source_5[WIDTH_5];
 	int sharpen_table[1024];
@@ -121,6 +252,7 @@ int main(void)
 	struct scale_5_state state_5 = { 0 };
 	uint32_t seed = 0x750750U;
 	unsigned int x;
+	unsigned int span;
 	int detail;
 
 	for (x = 0; x < WIDTH_5; x++) {
@@ -141,6 +273,12 @@ int main(void)
 		if (state_5.position != (x + 1) * 5U)
 			return 1;
 	}
+	for (span = 0; span < sizeof(spans) / sizeof(spans[0]); span++)
+		if (check_unrolled_77_span(source_77, spans[span][0],
+					     spans[span][1]) ||
+		    check_unrolled_5_span(source_5, spans[span][0],
+					    spans[span][1]))
+			return 1;
 	for (detail = -510; detail <= 513; detail++) {
 		int adjustment = detail * 8;
 		int magnitude = detail < 0 ? -detail * 8 : detail * 8;
@@ -154,6 +292,6 @@ int main(void)
 		if (sharpen_table[detail + 510] != reference)
 			return 1;
 	}
-	puts("Packed scaler and fixed-sharpen equivalence checks passed");
+	puts("Packed scaler, unrolled span and fixed-sharpen checks passed");
 	return 0;
 }

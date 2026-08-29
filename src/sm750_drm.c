@@ -92,6 +92,9 @@
 #define SM750_DRM_DMA_GUARD_WORDS 4
 #define SM750_DRM_DAMAGE_SPLIT_GAP 64
 #define SM750_DRM_MAX_DAMAGE_RECTS 32
+#define SM750_DRM_MAX_ROW_RUNS 8
+#define SM750_DRM_DENSE_RUN_NUMERATOR 3
+#define SM750_DRM_DENSE_RUN_DENOMINATOR 4
 #define SM750_DRM_SHARPEN_PERCENT 8
 #define SM750_DRM_HWC_ADDRESS PANEL_HWC_ADDRESS
 #define SM750_DRM_HWC_ADDRESS_ENABLE PANEL_HWC_ADDRESS_ENABLE
@@ -1724,6 +1727,62 @@ static void sm750_softscale_upload_span(struct sm750_drm_device *sdev,
 				 y, dst_x1, dst_x2);
 }
 
+struct sm750_source_run {
+	unsigned int x1;
+	unsigned int x2;
+};
+
+/*
+ * Choose sparse or merged row uploads from the changed-pixel density, so the
+ * policy scales with any source width.  The RGB565 destination snapshot still
+ * suppresses unchanged output pixels after scaling, sharpening and dithering.
+ */
+static void sm750_softscale_upload_changed_row(
+					struct sm750_drm_device *sdev,
+					const u32 *source, u32 *snapshot,
+					unsigned int y,
+					unsigned int src_x1,
+					unsigned int src_x2)
+{
+	struct sm750_source_run runs[SM750_DRM_MAX_ROW_RUNS];
+	unsigned int changed_pixels = 0;
+	unsigned int cursor = src_x1;
+	unsigned int first_x = src_x2;
+	unsigned int last_x = src_x1;
+	unsigned int run_count = 0;
+	unsigned int run_x1;
+	unsigned int run_x2;
+	bool run_overflow = false;
+	unsigned int i;
+
+	while (sm750_next_changed_u32_run(source, snapshot, src_x2,
+						 &cursor, &run_x1, &run_x2)) {
+		memcpy(snapshot + run_x1, source + run_x1,
+		       (run_x2 - run_x1) * sizeof(*source));
+		changed_pixels += run_x2 - run_x1;
+		first_x = min(first_x, run_x1);
+		last_x = max(last_x, run_x2);
+		if (run_count < ARRAY_SIZE(runs)) {
+			runs[run_count].x1 = run_x1;
+			runs[run_count].x2 = run_x2;
+			run_count++;
+		} else {
+			run_overflow = true;
+		}
+	}
+	if (!run_count)
+		return;
+	if (run_overflow ||
+	    changed_pixels * SM750_DRM_DENSE_RUN_DENOMINATOR >=
+		(last_x - first_x) * SM750_DRM_DENSE_RUN_NUMERATOR) {
+		sm750_softscale_upload_span(sdev, snapshot, y, first_x, last_x);
+		return;
+	}
+	for (i = 0; i < run_count; i++)
+		sm750_softscale_upload_span(sdev, snapshot, y,
+				runs[i].x1, runs[i].x2);
+}
+
 static void sm750_unscaled_upload_span(struct sm750_drm_device *sdev,
 				       const u32 *source, unsigned int y,
 				       unsigned int dst_x, unsigned int count)
@@ -1817,6 +1876,11 @@ static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
 			if (!memcmp(source_row + src_x1, snapshot + src_x1,
 				    (src_x2 - src_x1) * sizeof(*source_row)))
 				continue;
+			if (sdev->rgb565_scanout_snapshot_valid) {
+				sm750_softscale_upload_changed_row(sdev, source_row,
+						snapshot, y, src_x1, src_x2);
+				continue;
+			}
 			x = src_x1;
 			while (x < src_x2) {
 				unsigned int run_x1;
