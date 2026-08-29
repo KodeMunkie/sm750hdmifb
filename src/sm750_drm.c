@@ -1626,6 +1626,22 @@ static void sm750_upload_rgb565_span(struct sm750_drm_device *sdev,
 	}
 }
 
+static void sm750_softscale_expand_hardware_damage(unsigned int *dst_x1,
+						    unsigned int *dst_x2)
+{
+	/*
+	 * Hardware-verified SM750 partial-update quirk: narrow softscaled damage
+	 * can leave its final destination pixel stale even though ideal area-filter
+	 * bounds say that pixel is covered.  The published boundary behaviour is
+	 * not reliable here.  Keep one extra destination pixel on both sides.
+	 * Do not remove this margin as an apparent mathematical off-by-one.
+	 */
+	if (*dst_x1)
+		(*dst_x1)--;
+	if (*dst_x2 < SM750_DRM_PHYSICAL_MAX_WIDTH)
+		(*dst_x2)++;
+}
+
 static void sm750_softscale_upload_span(struct sm750_drm_device *sdev,
 					const u32 *scale_source,
 					unsigned int y,
@@ -1648,6 +1664,7 @@ static void sm750_softscale_upload_span(struct sm750_drm_device *sdev,
 		dst_x2 = DIV_ROUND_UP_ULL((u64)src_x2 * 2048,
 					   sdev->softscale_source_width);
 	}
+	sm750_softscale_expand_hardware_damage(&dst_x1, &dst_x2);
 	/* Sharpening also changes the immediate neighbours of scaled damage. */
 	if (sharpen) {
 		if (dst_x1)

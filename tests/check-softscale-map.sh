@@ -2,6 +2,19 @@
 # SPDX-License-Identifier: GPL-2.0
 set -euo pipefail
 
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+source_file=$project_dir/src/sm750_drm.c
+
+for requirement in \
+	'sm750_softscale_expand_hardware_damage(' \
+	'sm750_softscale_expand_hardware_damage(&dst_x1, &dst_x2);' \
+	'Do not remove this margin as an apparent mathematical off-by-one.'; do
+	grep -F "$requirement" "$source_file" >/dev/null || {
+		echo "Missing verified partial-damage margin: $requirement" >&2
+		exit 1
+	}
+done
+
 awk 'BEGIN {
 	for (x = 0; x < 2048; x++) {
 		phase = x % 4
@@ -49,7 +62,8 @@ awk 'BEGIN {
 	}
 
 	scale_widths[0] = 2464
-	for (width_index = 0; width_index < 1; width_index++) {
+	scale_widths[1] = 2560
+	for (width_index = 0; width_index < 2; width_index++) {
 		src_width = scale_widths[width_index]
 		delete coverage_general
 		for (x = 0; x < 2048; x++) {
@@ -80,18 +94,25 @@ awk 'BEGIN {
 			if (!coverage_general[x])
 				exit 1
 
-		# The mapped range already contains every output pixel whose area
-		# filter touches the source damage. Sharpening adds one neighbour.
+		# Live SM750 partial updates require one extra output pixel beyond
+		# the ideal mapped range. Sharpening independently adds a neighbour.
 		for (source_x = 0; source_x < src_width; source_x++) {
 			damage_x1 = int(source_x * 2048 / src_width)
 			damage_x2 = int(((source_x + 1) * 2048 + src_width - 1) / src_width)
-			sharp_x1 = damage_x1 > 0 ? damage_x1 - 1 : 0
-			sharp_x2 = damage_x2 < 2048 ? damage_x2 + 1 : 2048
-			if (sharp_x1 > damage_x1 || sharp_x2 < damage_x2)
+			hardware_x1 = damage_x1 > 0 ? damage_x1 - 1 : 0
+			hardware_x2 = damage_x2 < 2048 ? damage_x2 + 1 : 2048
+			sharp_x1 = hardware_x1 > 0 ? hardware_x1 - 1 : 0
+			sharp_x2 = hardware_x2 < 2048 ? hardware_x2 + 1 : 2048
+			if (hardware_x1 > damage_x1 || hardware_x2 < damage_x2 ||
+			    sharp_x1 > hardware_x1 || sharp_x2 < hardware_x2)
 				exit 1
-			if (damage_x1 > 0 && sharp_x1 != damage_x1 - 1)
+			if (damage_x1 > 0 && hardware_x1 != damage_x1 - 1)
 				exit 1
-			if (damage_x2 < 2048 && sharp_x2 != damage_x2 + 1)
+			if (damage_x2 < 2048 && hardware_x2 != damage_x2 + 1)
+				exit 1
+			if (hardware_x1 > 0 && sharp_x1 != hardware_x1 - 1)
+				exit 1
+			if (hardware_x2 < 2048 && sharp_x2 != hardware_x2 + 1)
 				exit 1
 		}
 	}
