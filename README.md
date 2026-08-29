@@ -87,8 +87,8 @@ make check
 The build creates these files under `dist/`:
 
 ```text
-sm750hdmifb_0.5.1_all.deb
-sm750hdmifb-0.5.1-source.tar.gz
+sm750hdmifb_0.5.2_all.deb
+sm750hdmifb-0.5.2-source.tar.gz
 SHA256SUMS
 ```
 
@@ -97,7 +97,7 @@ Install the locally built package:
 ```sh
 cd dist
 sha256sum -c SHA256SUMS
-sudo apt install ./sm750hdmifb_0.5.1_all.deb
+sudo apt install ./sm750hdmifb_0.5.2_all.deb
 sudo reboot
 ```
 
