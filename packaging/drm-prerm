@@ -3,7 +3,7 @@
 set -e
 
 name=${DPKG_MAINTSCRIPT_PACKAGE:-sm750hdmifb}
-version=0.5.3
+version=0.5.4
 
 restore_predecessor_file() {
 	path=$1
