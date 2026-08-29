@@ -20,6 +20,14 @@ board's separate SiI9024A converts its 24-bit parallel RGB/DVO stream to HDMI.
 
 ## Official specification versus this driver
 
+The official SM750 specification is known to be wrong for at least one
+hardware-observed boundary case: narrow partial updates require one more output
+pixel than the documented or ideal coverage model predicts, otherwise the
+rightmost pixel can remain stale. Treat documented boundary, count and
+completion semantics as hypotheses until they have been checked on live
+hardware. Do not remove an empirically validated workaround solely because the
+specification suggests it is redundant.
+
 | Area | SM750 published capability | Driver use or extension |
 |---|---|---|
 | Host link | PCI Express x1; full datasheets identify PCIe 1.1 | Works over the observed 2.5 GT/s x1 link; RGB565 reduces upload pressure. |
