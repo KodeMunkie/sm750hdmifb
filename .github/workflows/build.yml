@@ -22,17 +22,19 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential dkms linux-headers-generic libdrm-dev ripgrep
+          headers_package=$(apt-cache search --names-only '^linux-headers-6\.17\.[0-9]+-[0-9]+-generic$' | awk '{print $1}' | sort -V | tail -1)
+          test -n "$headers_package"
+          sudo apt-get install -y build-essential dkms "$headers_package" libdrm-dev ripgrep
 
       - name: Select Ubuntu kernel headers
         id: headers
         run: |
-          headers=$(find /usr/src -maxdepth 1 -type d -name 'linux-headers-*-generic' | sort -V | tail -1)
+          headers=$(find /usr/src -maxdepth 1 -type d -name 'linux-headers-6.17.*-generic' | sort -V | tail -1)
           test -n "$headers"
           echo "path=$headers" >>"$GITHUB_OUTPUT"
 

@@ -46,16 +46,16 @@ module is `sm750hdmidrm.ko` so it cannot be confused with `sm750fb.ko`.
 
 ### Kernel compatibility
 
-The driver is intended for **Linux 6.8 and newer**. DKMS deliberately refuses
+The driver is intended for **Linux 6.17 and newer**. DKMS deliberately refuses
 older kernels because the required DRM interfaces are not supported by this
-project. The source has compatibility paths for Linux 6.8 through the 6.x
+project. The source has compatibility paths for Linux 6.17 through the 6.x
 series and for Linux 7.0 onward. It currently builds and passes the full test
 suite against 6.17 and 7.0 Ubuntu kernels; the manual CI workflow also builds
-against Ubuntu 24.04's current generic kernel headers.
+against Ubuntu 24.04's 6.17 kernel headers.
 
 There is no fixed upper version cap, but future kernels can change internal DRM
 APIs. Because this is an out-of-tree driver, a new kernel version may require a
-source update even though it falls within the intended `6.8+` range.
+source update even though it falls within the intended `6.17+` range.
 
 Prebuilt packages, when available, are published under
 [GitHub Releases](https://github.com/KodeMunkie/sm750hdmifb/releases).
