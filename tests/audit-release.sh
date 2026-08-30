@@ -30,18 +30,30 @@ for forbidden in .audit-source .package-build xorg-sm750shadow xorg-sm750.strace
 	fi
 done
 
-if rg -n '/home/brownb2|0000:06:00\.0|shaggy|ralph|pascal|ava-single|val-behaviour' \
-	--glob '!audit-release.sh' \
-	"$project_dir/src" "$project_dir/tests" "$project_dir/tools" \
-	"$project_dir/packaging" "$project_dir/README.md" "$project_dir/docs"; then
-	echo "Machine-specific or internal development text remains." >&2
+release_text=(
+	"$project_dir/.github"
+	"$project_dir/src"
+	"$project_dir/tests"
+	"$project_dir/tools"
+	"$project_dir/packaging"
+	"$project_dir/README.md"
+	"$project_dir/docs"
+	"$project_dir/Makefile"
+	"$project_dir/build-package.sh"
+	"$project_dir/dkms.conf"
+)
+
+# Keep this generic: adding a real local username or machine ID to the audit
+# would itself disclose the value in the published source tree.
+private_pattern='/home/[[:alnum:]_.-]+|/Users/[[:alnum:]_.-]+|[A-Za-z]:\\Users\\|ghp_[[:alnum:]]{20,}|github_pat_[[:alnum:]_]{20,}'
+if rg -n -i "$private_pattern" --glob '!audit-release.sh' "${release_text[@]}"; then
+	echo "Local path, machine identifier, or credential pattern remains." >&2
 	exit 1
 fi
 
 if rg -n -i 'without (the )?written consent|all rights reserved|confidential' \
 	--glob '!audit-release.sh' \
-	"$project_dir/src" "$project_dir/tests" "$project_dir/tools" \
-	"$project_dir/packaging"; then
+	"${release_text[@]}"; then
 	echo "Restrictive licence marker found in releasable code." >&2
 	exit 1
 fi

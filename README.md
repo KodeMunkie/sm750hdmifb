@@ -1,5 +1,9 @@
 <!-- SPDX-License-Identifier: GPL-2.0-only -->
-# SM750 HDMI DRM driver
+# SM750 HDMI DRM Driver
+
+**Push this card to real 2048-wide output or a software-scaled 2560x1080
+ultrawide desktop, with bandwidth-saving colour conversion and update
+optimisations for smoother performance.**
 
 Linux display driver for the single-HDMI `SE-DP750A-HDMI` PCIe card.
 
@@ -80,21 +84,24 @@ the apparent colour detail.
 
 Common kernel or GRUB options are:
 
-| Option | Default | Must it be specified? | Effect or disabled feature | Risk |
-|---|---:|---|---|---|
-| `sm750hdmidrm.scanout_format=rgb565-bbdither` | `rgb565-bbdither` | No | Recommended dithered 16-bit scanout | Normal |
-| `sm750hdmidrm.scanout_format=xrgb8888` | `rgb565-bbdither` | Only for 32-bit scanout | Disables RGB565 conversion, custom dither and green correction; doubles pixel-upload traffic | Performance risk at high resolutions |
-| `sm750hdmidrm.scanout_format=rgb565` | `rgb565-bbdither` | Only for plain RGB565 | Disables the custom dither and green correction | Reduced colour quality |
-| `sm750hdmidrm.dither_green_gain=94` | `94` | No | Enables the tuned automatic green correction while dithering | Normal |
-| `sm750hdmidrm.dither_green_gain=100` | `94` | Only to turn correction off | Disables green correction but keeps the custom dither | Colour balance may look greener |
-| `sm750hdmidrm.enable_dma=1` | `1` | No | Enables verified eight-row DMA uploads with automatic CPU fallback | Normal |
-| `sm750hdmidrm.enable_dma=0` | `1` | Only to disable DMA | Forces write-combined CPU uploads | Lower update performance |
-| `sm750hdmidrm.disable_hardware_cursor=1` | `0` | Only for software cursor fallback | Disables the hardware cursor | Lower cursor responsiveness |
-| `sm750hdmidrm.edid_only=0` | `1` | Required for the driver catalogue and ultrawide modes | Stops EDID from restricting available modes; monitor identity is still read | **DANGEROUS: ALLOWS MODES AND CLOCKS THE MONITOR MAY NOT SUPPORT** |
-| `sm750hdmidrm.softscale_wide=1` | `0` | Required for 2464x1080 and 2560x1080; also requires `edid_only=0` | Enables logical ultrawide modes and software compression to 2048x1080 | **DANGEROUS / EXPERIMENTAL: REQUIRES EDID BYPASS AND MONITOR STRETCHING** |
-| `sm750hdmidrm.sharpen=1` | `0` | Recommended with ultrawide modes | Enables fixed 8% contrast sharpening after compression | Normal with ultrawide scaling |
-| `sm750hdmidrm.double_shadow=1` | `0` | Recommended for fewer redundant uploads | Adds source and converted-output comparison snapshots beside the DRM shadow framebuffer, avoiding conversion and upload of unchanged pixels; this is not front/back page flipping | Uses additional system memory |
-| `sm750hdmidrm.async_updates=1` | `1` | No | Keeps only the latest pending screen update instead of queuing stale frames | Normal |
+The table omits the common `sm750hdmidrm.` prefix to keep it readable. For
+example, enter `enable_dma=0` as `sm750hdmidrm.enable_dma=0` in GRUB.
+
+| Option and default | When to specify it | Effect and tradeoff |
+|---|---|---|
+| `scanout_format=rgb565-bbdither`<br>Default: `rgb565-bbdither` | No need; this is the recommended default | Dithered 16-bit scanout with green correction |
+| `scanout_format=xrgb8888`<br>Default: `rgb565-bbdither` | Only for 32-bit scanout | Disables RGB565, dither and green correction; doubles upload traffic and can lag at high resolutions |
+| `scanout_format=rgb565`<br>Default: `rgb565-bbdither` | Only for plain RGB565 | Disables the dither and green correction, reducing colour quality |
+| `dither_green_gain=94`<br>Default: `94` | No need; correction is on by default | Enables the tuned green correction while dithering |
+| `dither_green_gain=100`<br>Default: `94` | To turn green correction off | Keeps the dither but may produce a greener colour balance |
+| `enable_dma=1`<br>Default: `1` | No need; DMA is on by default | Verified eight-row DMA uploads with automatic CPU fallback |
+| `enable_dma=0`<br>Default: `1` | To disable DMA | Forces CPU uploads, usually with lower update performance |
+| `disable_hardware_cursor=1`<br>Default: `0` | For the software cursor fallback | Disables the hardware cursor and may reduce cursor responsiveness |
+| `edid_only=0`<br>Default: `1` | Required for the driver catalogue and ultrawide modes | **DANGEROUS: STOPS EDID RESTRICTING MODES AND CLOCKS THE MONITOR MAY NOT SUPPORT** |
+| `softscale_wide=1`<br>Default: `0` | Required for 2464x1080 and 2560x1080; also set `edid_only=0` | **DANGEROUS / EXPERIMENTAL: ENABLES WIDE COMPRESSION AND REQUIRES MONITOR STRETCHING** |
+| `sharpen=1`<br>Default: `0` | Recommended with ultrawide modes | Adds fixed 8% contrast sharpening after compression |
+| `double_shadow=1`<br>Default: `0` | Recommended to avoid redundant uploads | Adds source and output comparison snapshots; skips unchanged pixels but uses more system memory. This is not front/back page flipping |
+| `async_updates=1`<br>Default: `1` | No need; enabled by default | Keeps only the latest pending update instead of queuing stale frames |
 
 Add options to the existing `GRUB_CMDLINE_LINUX_DEFAULT` value in
 `/etc/default/grub`, then apply them with:
@@ -113,21 +120,29 @@ The device is normally described as supporting up to 1920 pixels horizontally.
 With `edid_only=0`, the driver also exposes these real 2048-wide hardware
 modes:
 
-| Desktop and HDMI mode | Refresh rates | Monitor output | Risk |
-|---|---|---|---|
-| `2048x864` | 59.94, 60, 70, 72, 75 Hz | Native 2048x864 or monitor-scaled | **EXPERIMENTAL: EDID DOES NOT RESTRICT THIS MODE** |
-| `2048x1024` | 59.94, 60, 70, 72 Hz | Native 2048x1024 or monitor-scaled | **EXPERIMENTAL: EDID DOES NOT RESTRICT THIS MODE** |
-| `2048x1080` | 50, 59.94, 60, 70, 72, 75 Hz | Native 2048x1080 or monitor-scaled | **EXPERIMENTAL: HIGH REFRESH CLOCKS MAY EXCEED SPECIFICATION** |
-| `2048x1152` | 59.94, 60 Hz | Native 2048x1152 or monitor-scaled | **EXPERIMENTAL: EDID DOES NOT RESTRICT THIS MODE** |
+| Desktop and HDMI mode | Refresh rates | Output and risk |
+|---|---|---|
+| `2048x864` | 59.94, 60, 70, 72, 75 Hz | Native or monitor-scaled. **EXPERIMENTAL: NOT RESTRICTED BY EDID** |
+| `2048x1024` | 59.94, 60, 70, 72 Hz | Native or monitor-scaled. **EXPERIMENTAL: NOT RESTRICTED BY EDID** |
+| `2048x1080` | 50, 59.94, 60, 70, 72, 75 Hz | Native or monitor-scaled. **EXPERIMENTAL: HIGH REFRESH MAY EXCEED SPECIFICATION** |
+| `2048x1152` | 59.94, 60 Hz | Native or monitor-scaled. **EXPERIMENTAL: NOT RESTRICTED BY EDID** |
 
 `softscale_wide=1` adds two wider logical desktops. Both require a physical
 2560x1080 ultrawide monitor with **FULL WIDESCREEN STRETCH ENABLED** in its
 on-screen menu:
 
-| Logical desktop | Physical monitor pixels | Desktop-to-HDMI width ratio | Refresh rates | HDMI scanout and monitor scaling | Recommendation |
-|---|---|---|---|---|---|
-| `2464x1080` | `2560x1080` | `77:64`, 16.9% compression | 50, 59.94, 60, 70, 72, 75 Hz | Stretched `2048x1080 -> 2560x1080` physical on 2K ultrawide monitors | **RECOMMENDED:** retains more detail and is more responsive; enable `sharpen=1` |
-| `2560x1080` | `2560x1080` | `5:4`, 20% compression | 50, 59.94, 60, 70, 72, 75 Hz | Stretched `2048x1080 -> 2560x1080` physical on 2K ultrawide monitors | Less detail and lower performance than 2464x1080 because more width is compressed; see [the reasoning](#why-2464x1080-is-recommended) |
+| Logical desktop | Physical monitor | Width ratio | HDMI and monitor path |
+|---|---|---|---|
+| `2464x1080` | `2560x1080` | `77:64`<br>16.9% compression | `2048x1080 -> 2560x1080` stretch |
+| `2560x1080` | `2560x1080` | `5:4`<br>20% compression | `2048x1080 -> 2560x1080` stretch |
+
+| Mode | Refresh rates | Guidance |
+|---|---|---|
+| `2464x1080` | 50, 59.94, 60, 70, 72, 75 Hz | **RECOMMENDED:** more detail and better responsiveness; enable `sharpen=1` |
+| `2560x1080` | 50, 59.94, 60, 70, 72, 75 Hz | Less detail and lower performance because more width is compressed; see [the reasoning](#why-2464x1080-is-recommended) |
+
+For both modes, the HDMI signal is stretched from `2048x1080` to the physical
+`2560x1080` pixels of a 2K ultrawide monitor.
 
 **2048 pixels is the highest real width this card can produce in hardware.**
 The SM750 primary graphics plane has an 11-bit right-edge field, so its physical
@@ -196,7 +211,7 @@ small updates do not make the pattern crawl or leave mismatched patches.
 
 ## Screenshots
 
-![2464x1080 logical Cinnamon desktop](docs/images/desktop-2464x1080.png)
+![2464x1080 logical ultrawide desktop](docs/images/desktop-2464x1080.png)
 
 *2464x1080 logical desktop -> 2048x1080 SM750 hardware-width limit ->
 2560x1080 physical panel pixels, stretched by the monitor menu option.*
