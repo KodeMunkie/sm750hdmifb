@@ -16,6 +16,12 @@ for required in "$module" "$deb" "$source_archive" "$project_dir/LICENSE"; do
 	}
 done
 
+if rg -n 'sm750hdmifb[-_]0\.5\.[0-4]' \
+	"$project_dir/.github/workflows/build.yml"; then
+	echo "Manual build workflow contains a stale release artifact version." >&2
+	exit 1
+fi
+
 for forbidden in .audit-source .package-build xorg-sm750shadow xorg-sm750.strace; do
 	if tar -tzf "$source_archive" | grep -F "$forbidden" >/dev/null ||
 		dpkg-deb -c "$deb" | grep -F "$forbidden" >/dev/null; then

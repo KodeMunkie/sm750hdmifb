@@ -15,7 +15,8 @@ grep -F 'BUILT_MODULE_NAME[0]="sm750hdmidrm"' "$dkms_config" >/dev/null
 grep -F 'readonly package=sm750hdmifb' "$builder" >/dev/null
 grep -F 'readonly deb="${dist_dir}/${package}_${version}_${arch}.deb"' \
 	"$builder" >/dev/null
-grep -F 'Maintainer: Benjamin Brown' "$builder" >/dev/null
+grep -F 'Maintainer: kodemunkie <kodemunkie@users.noreply.github.com>' \
+	"$builder" >/dev/null
 grep -F 'SM750_DRM_SCANOUT_DEFAULT' "$project_dir/src/Makefile" >/dev/null
 grep -F 'SM750_DRM_DEFAULT_SCANOUT_FORMAT "rgb565-bbdither"' \
 	"$project_dir/src/sm750_drm.c" >/dev/null

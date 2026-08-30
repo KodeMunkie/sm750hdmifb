@@ -11,11 +11,11 @@ build-time defaults.
 | Parameter | Default | Purpose |
 |---|---:|---|
 | `scanout_format` | `rgb565-bbdither` | `xrgb8888`, `rgb565`, or dithered `rgb565-bbdither`. The deprecated `rgb565-dither` alias remains accepted. |
-| `dither_green_gain` | `94` | Green-channel gain from 0 to 100 for `rgb565-bbdither`. |
+| `dither_green_gain` | `94` | Green-channel gain for `rgb565-bbdither`. The default enables the tuned correction; set `100` to disable correction without disabling the dither. |
 | `edid_only` | `1` | Use valid EDID modes instead of the driver catalogue. |
 | `softscale_wide` | `0` | Add logical 2464/2560x1080 modes when `edid_only=0`. |
 | `sharpen` | `0` | Apply fixed 8% sharpening after horizontal soft scaling. |
-| `double_shadow` | `0` | Snapshot source rows and trim update regions to pixels that really changed. |
+| `double_shadow` | `0` | Add source and converted-output comparison snapshots alongside the DRM shadow framebuffer. This is not front/back page flipping; it avoids converting or uploading unchanged pixels. |
 | `disable_hardware_cursor` | `0` | Set to `1` to use a software-rendered cursor instead of the 64x64 hardware plane. |
 | `async_updates` | `1` | Copy reported changed regions into a latest-frame mailbox and perform scaling, dithering and VRAM upload on a dedicated worker. Set to `0` to restore synchronous updates for diagnosis. |
 | `enable_dma` | `1` | Use optimized eight-row DMA1 uploads. Set to `0` to force write-combined CPU uploads. |

@@ -57,7 +57,7 @@ Version: ${version}
 Section: kernel
 Priority: optional
 Architecture: ${arch}
-Maintainer: Benjamin Brown <13253888+KodeMunkie@users.noreply.github.com>
+Maintainer: kodemunkie <kodemunkie@users.noreply.github.com>
 Depends: dkms, make, gcc
 Provides: sm750hdmi-dkms
 Conflicts: sm750hdmi-dkms, sm750hdmidrm-xrgb8888-dkms, sm750hdmidrm-rgb565-dither-dkms

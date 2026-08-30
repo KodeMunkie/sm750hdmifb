@@ -95,7 +95,7 @@ output pixel. On the tested PCIe 1.1 x1 link, high-resolution full-screen
 32-bit updates exceed the practical bandwidth and latency budget and cause
 visible lag; RGB565 halves that device-bound traffic.
 
-Benjamin Brown's custom 8x8 ordered dither preserves apparent gradients and
+KodeMunkie's custom 8x8 ordered dither preserves apparent gradients and
 colour detail during quantization. Its screen-anchored pattern remains stable
 across partial updates, and its default 94% green gain corrects the visibly
 strong green channel of raw RGB565 on the tested output. For ultrawide modes,
