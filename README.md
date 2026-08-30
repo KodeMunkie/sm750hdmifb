@@ -235,14 +235,14 @@ desktop to the SM750's hardware-width limit.
 
 <a href="docs/images/desktop-2560x1080-physical.jpg"><img src="docs/images/desktop-2560x1080-physical.jpg" alt="The monitor stretching the SM750 scanout across its physical ultrawide panel" width="50%"></a>
 
-The photographed output is running at 75 Hz with the driver's 16-bit
-`rgb565-bbdither` dithered scanout.
+The photographed result fills the monitor's `2560x1080` physical pixels at
+75 Hz, using the driver's 16-bit `rgb565-bbdither` dithered scanout.
 
 The monitor's **FULL WIDESCREEN STRETCH** option expands that signal across its
 physical `2560x1080` panel. The complete path is therefore:
 
-*2464x1080 logical desktop -> 2048x1080 SM750 hardware scanout -> 2560x1080
-physical panel, stretched by the monitor.*
+*Logical desktop -> SM750 hardware scanout -> physical panel, stretched by the
+monitor.*
 
 ## Troubleshooting
 
