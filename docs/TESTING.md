@@ -4,7 +4,9 @@
 ## Offline checks
 
 `make check` builds the module for the running kernel and runs metadata, mode,
-dither, softscale, sharpening, cursor, DMA, damage, Xorg and packaging checks.
+dither, softscale, sharpening, cursor, DMA, changed-region, Xorg and packaging
+checks. DRM documentation calls a reported changed screen region "damage";
+this means pixels needing refresh, not corruption or physical damage.
 It does not install or load the resulting module.
 
 `make check-all-kernels` repeats module builds for all supported installed
@@ -25,7 +27,7 @@ journalctl -b -k | grep -i sm750
 ```
 
 Check login, logout, mode changes, cursor movement, window movement, partial
-clock-widget updates, suspend/resume and a cold boot. Test full-screen damage
+clock-widget updates, suspend/resume and a cold boot. Test full-screen updates
 in both RGB565 dither and XRGB8888 before calling a build validated.
 
 ## Recovery

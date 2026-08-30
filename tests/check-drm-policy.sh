@@ -109,7 +109,7 @@ for requirement in \
 	}
 done
 for parameter in edid_only softscale_wide sharpen double_shadow \
-		disable_hardware_cursor enable_dma disable_dma; do
+		disable_hardware_cursor enable_dma disable_dma async_updates; do
 	grep -F "module_param($parameter, bool, 0444);" "$source_file" \
 		>/dev/null || {
 		echo "Missing runtime policy parameter: $parameter" >&2
@@ -145,10 +145,9 @@ if ! grep -F '#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)' \
 	echo "DRM source lacks versioned core-timer/fallback selection." >&2
 	exit 1
 fi
-if grep -E 'request(_threaded)?_irq' "$source_file" >/dev/null; then
-	echo "DRM source unexpectedly enables unvalidated hardware IRQ handling." >&2
-	exit 1
-fi
+grep -F 'devm_request_irq(&sdev->pdev->dev, sdev->pdev->irq,' \
+	"$source_file" >/dev/null
+grep -F 'IRQF_SHARED' "$source_file" >/dev/null
 if grep -F '#define SM750_DRM_MAX_WIDTH 1920' "$source_file" >/dev/null; then
 	echo "Initial build was accidentally capped at 1920 pixels." >&2
 	exit 1

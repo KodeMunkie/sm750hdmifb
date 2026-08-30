@@ -10,7 +10,7 @@ bash -n "$builder" "$project_dir/packaging/write-xorg-config.sh"
 sh -n "$project_dir/packaging/drm-postinst" \
 	"$project_dir/packaging/drm-prerm" \
 	"$project_dir/packaging/drm-postrm"
-grep -F 'PACKAGE_VERSION="0.5.4"' "$dkms_config" >/dev/null
+grep -F 'PACKAGE_VERSION="0.5.5"' "$dkms_config" >/dev/null
 grep -F 'BUILT_MODULE_NAME[0]="sm750hdmidrm"' "$dkms_config" >/dev/null
 grep -F 'readonly package=sm750hdmifb' "$builder" >/dev/null
 grep -F 'readonly deb="${dist_dir}/${package}_${version}_${arch}.deb"' \

@@ -167,7 +167,7 @@ static int sii902x_apply_hotplug_workaround(struct device *dev)
 	if (ret)
 		return ret;
 	if (!(status & SII902X_PLUGGED_STATUS)) {
-		dev_info(dev,
+		dev_dbg(dev,
 			 "SiI9024A vendor HPD workaround skipped: HPD is low\n");
 		return 0;
 	}
@@ -175,7 +175,7 @@ static int sii902x_apply_hotplug_workaround(struct device *dev)
 	ret = sii902x_indexed_update(0x00, 0x0a, BIT(3), BIT(3),
 				      &readback);
 	if (!ret)
-		dev_info(dev,
+		dev_dbg(dev,
 			 "SiI9024A vendor HPD workaround applied: page0[0a]=%02x\n",
 			 readback);
 	return ret;
@@ -258,66 +258,6 @@ static int sii902x_write_block(unsigned char reg, const unsigned char *data,
 					       data, length);
 	return sm750_sw_i2c_write_block(SII902X_I2C_ADDR_WRITE, reg, data,
 					length);
-}
-
-/*
- * Read what the transmitter detects on the parallel input pins.  SM750 MMIO
- * readback only proves that its timing generator accepted our values; these
- * counters independently prove what reached the SiI9024A.  Take several
- * samples because the programming guide permits H_RES/V_RES to vary slightly.
- */
-static void sii902x_log_input_sync(struct device *dev,
-				   const struct fb_var_screeninfo *var)
-{
-	unsigned int expected_h, expected_v, hres[3], vres[3];
-	unsigned char detect[3], raw[4], config, generator;
-	unsigned int sample, i;
-	int ret;
-
-	expected_h = var->xres + var->left_margin + var->right_margin +
-		     var->hsync_len;
-	expected_v = var->yres + var->upper_margin + var->lower_margin +
-		     var->vsync_len;
-
-	/* Allow more than one complete frame before sampling the counters. */
-	msleep(40);
-	for (sample = 0; sample < ARRAY_SIZE(hres); sample++) {
-		ret = sii902x_read(SII902X_SYNC_DETECT, &detect[sample]);
-		if (ret)
-			goto read_failed;
-		for (i = 0; i < ARRAY_SIZE(raw); i++) {
-			ret = sii902x_read(SII902X_HRES_LSB + i, &raw[i]);
-			if (ret)
-				goto read_failed;
-		}
-		hres[sample] = raw[0] | ((raw[1] & 0x3f) << 8);
-		vres[sample] = raw[2] | ((raw[3] & 0x0f) << 8);
-		if (sample + 1 < ARRAY_SIZE(hres))
-			msleep(20);
-	}
-	ret = sii902x_read(SII902X_SYNC_CONFIG, &config);
-	if (ret)
-		goto read_failed;
-	ret = sii902x_read(SII902X_DE_GENERATOR, &generator);
-	if (ret)
-		goto read_failed;
-
-	dev_info(dev,
-		 "SiI9024A input sync measured: requested=%ux%u, H=%u/%u/%u, V=%u/%u/%u, detect=%02x/%02x/%02x (H=%s V=%s %s), sync-config=%02x DE-generator=%02x\n",
-		 expected_h, expected_v,
-		 hres[0], hres[1], hres[2], vres[0], vres[1], vres[2],
-		 detect[0], detect[1], detect[2],
-		 detect[2] & SII902X_SYNC_DETECT_HS_LOW ? "negative" : "positive",
-		 detect[2] & SII902X_SYNC_DETECT_VS_LOW ? "negative" : "positive",
-		 detect[2] & SII902X_SYNC_DETECT_INTERLACED ?
-		 "interlaced" : "progressive", config, generator);
-	if (hres[2] != expected_h || vres[2] != expected_v)
-		dev_warn(dev,
-			 "SiI9024A input raster differs from requested timing\n");
-	return;
-
-read_failed:
-	dev_warn(dev, "SiI9024A input sync readback failed: %d\n", ret);
 }
 
 static int sii902x_verify_tpi_and_clear_events(struct device *dev,
@@ -511,8 +451,6 @@ static int sii902x_run_rom_720p_sequence(struct device *dev,
 			     sii902x_falling_edge ? 0x60 : 0x70);
 	if (ret)
 		return ret;
-	sii902x_log_input_sync(dev, var);
-
 	for (i = 0; i < ARRAY_SIZE(video); i++) {
 		ret = sii902x_read(SII902X_TPI_VIDEO_DATA + i, &video[i]);
 		if (ret)
@@ -631,7 +569,7 @@ static int sii902x_wait_receiver_ready(struct device *dev,
 
 	*status = value;
 	if (stable >= 100)
-		dev_info(dev,
+		dev_dbg(dev,
 			 "SiI9024A receiver ready after %u ms: HPD=%u RSEN=1 status=%02x\n",
 			 elapsed + 25,
 			 !!(value & SII902X_PLUGGED_STATUS), value);
@@ -809,7 +747,7 @@ static int sii902x_begin_control(struct device *dev, bool use_hardware_i2c,
 	/* Resolution changes require at least 128 ms with TMDS powered down. */
 	msleep(150);
 	sii902x_mode_prepared = true;
-	dev_info(dev,
+	dev_dbg(dev,
 		 "SiI9024A quiesced before source mode change: compatible=%02x, profile=%s\n",
 		 compat, sii902x_clean_init ? "documented-only" : "board-ROM");
 	return 0;
@@ -886,7 +824,7 @@ int sm750_sii902x_enable(struct device *dev,
 		if (ret)
 			return ret;
 	}
-	dev_info(dev, "SiI9024A initialization profile: %s\n",
+	dev_dbg(dev, "SiI9024A initialization profile: %s\n",
 		 sii902x_clean_init ? "documented-only" : "board-ROM");
 
 	ret = sii902x_apply_hotplug_workaround(dev);
@@ -941,7 +879,7 @@ int sm750_sii902x_enable(struct device *dev,
 				  ARRAY_SIZE(video));
 	if (ret)
 		return ret;
-	dev_info(dev,
+	dev_dbg(dev,
 		 "SiI9024A TPI video block: %*ph (pixel=%u.%02u MHz, rate=%u Hz, %s=%ux%u, input edge=%s)\n",
 		 (int)sizeof(video), video, pll_khz / 1000,
 		 pll_khz % 1000 / 10, refresh,
@@ -995,7 +933,6 @@ int sm750_sii902x_enable(struct device *dev,
 	ret = sii902x_write(SII902X_TPI_VIDEO_DATA + 8, video[8]);
 	if (ret)
 		return ret;
-	sii902x_log_input_sync(dev, var);
 	for (i = 0; i < ARRAY_SIZE(readback); i++) {
 		ret = sii902x_read(SII902X_TPI_VIDEO_DATA + i, &readback[i]);
 		if (ret)
@@ -1007,7 +944,7 @@ int sm750_sii902x_enable(struct device *dev,
 	ret = sii902x_read(0x19, &avi_last);
 	if (ret)
 		return ret;
-	dev_info(dev,
+	dev_dbg(dev,
 		 "SiI9024A TPI readback: video %*ph, output-format=%02x AVI-last=%02x\n",
 		 (int)sizeof(readback), readback, output_format, avi_last);
 	if (memcmp(video, readback, sizeof(video)))
@@ -1028,7 +965,7 @@ int sm750_sii902x_enable(struct device *dev,
 	ret = sii902x_read(SII902X_INT_STATUS, &value);
 	if (ret)
 		return ret;
-	dev_info(dev,
+	dev_dbg(dev,
 		 "SiI9024A enabled: id %02x:%02x:%02x, %ux%u@%u, %s, HPD %s, RSEN %s, status %02x; TPI %u.%02u Hz, %u.%02u MHz, PLL %u.%02u MHz, totals %ux%u, termination %02x\n",
 		 chipid[0], chipid[1], chipid[2],
 		 var->xres, var->yres, refresh,
@@ -1058,7 +995,7 @@ int sm750_sii902x_read_edid(struct device *dev, unsigned char *edid,
 	if (ret)
 		return ret;
 	sii902x_read(0x3d, &int_status);
-	dev_info(dev, "DDC request: system-control=%02x interrupt-status=%02x\n",
+	dev_dbg(dev, "DDC request: system-control=%02x interrupt-status=%02x\n",
 		 saved, int_status);
 
 	/* Request, wait for grant, then explicitly lock host ownership. */
@@ -1080,7 +1017,7 @@ int sm750_sii902x_read_edid(struct device *dev, unsigned char *edid,
 		ret = -ETIMEDOUT;
 		goto release;
 	}
-	dev_info(dev, "DDC granted: system-control=%02x\n", value);
+	dev_dbg(dev, "DDC granted: system-control=%02x\n", value);
 
 	/* Preserve all unrelated system-control bits while closing the switch. */
 	ret = sii902x_write(SII902X_SYS_CTRL_DATA, value);
@@ -1176,7 +1113,7 @@ release:
 		}
 	}
 
-	dev_info(dev,
+	dev_dbg(dev,
 		 "read valid %u-byte EDID over SiI9024A DDC: %u extension%s advertised, first extension %s, HDMI vendor block %s%s\n",
 		 blocks_read * EDID_BLOCK_SIZE, extension_count,
 		 extension_count == 1 ? "" : "s",

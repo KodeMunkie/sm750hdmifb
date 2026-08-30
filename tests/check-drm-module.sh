@@ -15,7 +15,7 @@ modinfo -F parm "$module" | grep '^preferred_refresh:' >/dev/null
 modinfo -F parm "$module" | grep '^scanout_format:' >/dev/null
 modinfo -F parm "$module" | grep '^dither_green_gain:' >/dev/null
 for parameter in edid_only softscale_wide sharpen double_shadow \
-		disable_hardware_cursor enable_dma disable_dma; do
+		disable_hardware_cursor enable_dma disable_dma async_updates; do
 	modinfo -F parm "$module" | grep "^${parameter}:" >/dev/null
 done
 readelf -h "$module" | grep 'ELF64' >/dev/null
@@ -56,8 +56,10 @@ else
 		exit 1
 	}
 fi
-if grep -E 'request(_threaded)?_irq' <<<"$undefined" >/dev/null; then
-	echo "DRM module unexpectedly depends on unvalidated hardware IRQ setup." >&2
-	exit 1
-fi
+for symbol in devm_request_threaded_irq wait_for_completion_timeout; do
+	grep -E "[[:space:]]${symbol}$" <<<"$undefined" >/dev/null || {
+		echo "DRM module lacks asynchronous DMA symbol: $symbol" >&2
+		exit 1
+	}
+done
 echo "DRM module metadata checks passed: $module"

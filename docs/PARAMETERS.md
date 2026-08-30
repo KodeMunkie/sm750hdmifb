@@ -15,11 +15,12 @@ build-time defaults.
 | `edid_only` | `1` | Use valid EDID modes instead of the driver catalogue. |
 | `softscale_wide` | `0` | Add logical 2464/2560x1080 modes when `edid_only=0`. |
 | `sharpen` | `0` | Apply fixed 8% sharpening after horizontal soft scaling. |
-| `double_shadow` | `0` | Snapshot source rows and trim reported damage to pixels that really changed. |
+| `double_shadow` | `0` | Snapshot source rows and trim update regions to pixels that really changed. |
 | `disable_hardware_cursor` | `0` | Set to `1` to use a software-rendered cursor instead of the 64x64 hardware plane. |
-| `enable_dma` | `0` | Set to `1` to use optimized eight-row DMA1 uploads. CPU uploads are the conservative default. |
+| `async_updates` | `1` | Copy reported changed regions into a latest-frame mailbox and perform scaling, dithering and VRAM upload on a dedicated worker. Set to `0` to restore synchronous updates for diagnosis. |
+| `enable_dma` | `1` | Use optimized eight-row DMA1 uploads. Set to `0` to force write-combined CPU uploads. |
 | `disable_dma` | `0` | Deprecated safety veto. If set, CPU uploads are forced even when `enable_dma=1`. |
-| `shadow_dma_min_bytes` | `4096` | Smallest aligned upload span sent through DMA1. The one-RGB565-scanline default avoids DMA setup and polling overhead for small interactive updates. Valid range is checked at probe. |
+| `shadow_dma_min_bytes` | `4096` | Smallest aligned upload span sent through DMA1. The one-RGB565-scanline default avoids DMA setup overhead for small interactive updates. Valid range is checked at probe. |
 | `preferred_width` | `0` | Preferred exposed mode width; use with height and refresh. |
 | `preferred_height` | `0` | Preferred exposed mode height. |
 | `preferred_refresh` | `0` | Preferred integer refresh rate in hertz. |
@@ -65,7 +66,8 @@ make \
   SM750_DRM_DEFAULT_SHARPEN=0 \
   SM750_DRM_DEFAULT_DOUBLE_SHADOW=0 \
   SM750_DRM_DEFAULT_DISABLE_HARDWARE_CURSOR=0 \
-  SM750_DRM_DEFAULT_ENABLE_DMA=0
+  SM750_DRM_DEFAULT_ENABLE_DMA=1 \
+  SM750_DRM_DEFAULT_ASYNC_UPDATES=1
 ```
 
 `SM750_DRM_SCANOUT_DEFAULT` also accepts `xrgb8888` and `rgb565`.

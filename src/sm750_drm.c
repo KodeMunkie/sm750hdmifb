@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/aperture.h>
+#include <linux/completion.h>
 #include <linux/dma-mapping.h>
 #include <linux/fb.h>
 #include <linux/hrtimer.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
@@ -12,6 +14,7 @@
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/version.h>
+#include <linux/workqueue.h>
 
 #ifdef CONFIG_X86
 #include <asm/io.h>
@@ -163,7 +166,10 @@ MODULE_PARM_DESC(preferred_refresh, "Optional preferred mode refresh in Hz");
 #define SM750_DRM_DEFAULT_DISABLE_HARDWARE_CURSOR 0
 #endif
 #ifndef SM750_DRM_DEFAULT_ENABLE_DMA
-#define SM750_DRM_DEFAULT_ENABLE_DMA 0
+#define SM750_DRM_DEFAULT_ENABLE_DMA 1
+#endif
+#ifndef SM750_DRM_DEFAULT_ASYNC_UPDATES
+#define SM750_DRM_DEFAULT_ASYNC_UPDATES 1
 #endif
 
 static char *scanout_format = SM750_DRM_DEFAULT_SCANOUT_FORMAT;
@@ -176,6 +182,7 @@ static bool disable_hardware_cursor =
 	SM750_DRM_DEFAULT_DISABLE_HARDWARE_CURSOR;
 static bool enable_dma = SM750_DRM_DEFAULT_ENABLE_DMA;
 static bool disable_dma;
+static bool async_updates = SM750_DRM_DEFAULT_ASYNC_UPDATES;
 static unsigned int shadow_dma_min_bytes = 4096;
 module_param(scanout_format, charp, 0444);
 module_param(dither_green_gain, uint, 0444);
@@ -186,6 +193,7 @@ module_param(double_shadow, bool, 0444);
 module_param(disable_hardware_cursor, bool, 0444);
 module_param(enable_dma, bool, 0444);
 module_param(disable_dma, bool, 0444);
+module_param(async_updates, bool, 0444);
 module_param(shadow_dma_min_bytes, uint, 0444);
 MODULE_PARM_DESC(scanout_format,
 	"Scanout backend: xrgb8888, rgb565, or rgb565-bbdither");
@@ -199,9 +207,12 @@ MODULE_PARM_DESC(double_shadow,
 	"Enable source snapshots and difference-based damage trimming");
 MODULE_PARM_DESC(disable_hardware_cursor,
 	"Disable the hardware cursor plane and use software cursor rendering");
-MODULE_PARM_DESC(enable_dma, "Enable optimized eight-row DMA1 shadow uploads");
+MODULE_PARM_DESC(enable_dma,
+	"Enable optimized eight-row DMA1 shadow uploads (default enabled)");
 MODULE_PARM_DESC(disable_dma,
 	"Deprecated DMA safety veto; overrides enable_dma=1");
+MODULE_PARM_DESC(async_updates,
+	"Coalesce shadow damage on a dedicated worker (default enabled)");
 MODULE_PARM_DESC(shadow_dma_min_bytes,
 	"Minimum aligned shadow span for DMA (default 4096 bytes)");
 
@@ -214,6 +225,9 @@ struct sm750_drm_device {
 	struct mutex mode_lock;
 	struct mutex shadow_lock;
 	struct mutex cursor_lock;
+	struct mutex async_lock;
+	struct workqueue_struct *shadow_workqueue;
+	struct work_struct shadow_work;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	struct hrtimer vblank_timer;
 	spinlock_t vblank_lock;
@@ -228,6 +242,7 @@ struct sm750_drm_device {
 	struct sm750_dither_scale_map *dither_scale_map;
 	u32 *dither_source_line;
 	u32 *shadow_source_snapshot;
+	u32 *async_source;
 	u16 *rgb565_scanout_snapshot;
 	u32 *softscale_output_line;
 	u32 *xrgb_output_line;
@@ -235,6 +250,7 @@ struct sm750_drm_device {
 	u8 *cursor_image;
 	void *dma_staging;
 	dma_addr_t dma_staging_address;
+	struct completion dma_completion;
 	u16 *dither_output_line;
 	u32 cursor_offset;
 	u32 cursor_encoded_width;
@@ -242,6 +258,8 @@ struct sm750_drm_device {
 	u32 dma_source_address;
 	u32 dma_pending_destination;
 	size_t dma_pending_size;
+	struct drm_rect async_damage[SM750_DRM_MAX_DAMAGE_RECTS];
+	unsigned int async_damage_count;
 	u32 shadow_source_width;
 	u32 shadow_source_height;
 	u32 disconnected_width;
@@ -269,7 +287,12 @@ struct sm750_drm_device {
 	bool cursor_image_valid;
 	bool shadow_dma_enabled;
 	bool shadow_dma_broken;
+	bool dma_irq_enabled;
+	bool dma_irq_armed;
+	u32 dma_irq_mask_saved;
 	bool shadow_write_pending;
+	bool async_source_valid;
+	bool async_stopping;
 	bool connected_edid_valid;
 	bool monitor_disconnected;
 	bool disconnected_mode_valid;
@@ -739,8 +762,8 @@ static bool sm750_mark_preferred_mode(struct drm_connector *connector,
 	list_for_each_entry(mode, &connector->probed_modes, head)
 		mode->type &= ~DRM_MODE_TYPE_PREFERRED;
 	preferred->type |= DRM_MODE_TYPE_PREFERRED;
-	drm_info(connector->dev, "%s preferred mode set to %ux%u@%u\n",
-		 source, width, height, refresh);
+	drm_dbg_kms(connector->dev, "%s preferred mode set to %ux%u@%u\n",
+		    source, width, height, refresh);
 	return true;
 }
 
@@ -1254,6 +1277,65 @@ static int sm750_program_mode(struct sm750_drm_device *sdev,
 				    sii9024_scl, sii9024_sda);
 }
 
+static void sm750_dma_irq_disable(void *data)
+{
+	struct sm750_drm_device *sdev = data;
+	u32 mask;
+
+	if (!sdev->dma_irq_enabled)
+		return;
+	WRITE_ONCE(sdev->dma_irq_armed, false);
+	mask = peek32(INT_MASK);
+	mask &= ~INT_MASK_DMA1;
+	mask |= sdev->dma_irq_mask_saved & INT_MASK_DMA1;
+	poke32(INT_MASK, mask);
+	sdev->dma_irq_enabled = false;
+}
+
+static irqreturn_t sm750_dma_irq_handler(int irq, void *data)
+{
+	struct sm750_drm_device *sdev = data;
+	u32 control;
+	u32 status;
+
+	if (irq != sdev->pdev->irq)
+		return IRQ_NONE;
+	status = readl(sdev->regs + INT_STATUS);
+	control = readl(sdev->regs + DMA_ABORT_INTERRUPT);
+	if (!(status & INT_STATUS_DMA1) &&
+	    !(control & DMA_ABORT_INTERRUPT_INT_1))
+		return IRQ_NONE;
+	if (!(control & DMA_ABORT_INTERRUPT_INT_1))
+		return IRQ_NONE;
+	writel(control & ~DMA_ABORT_INTERRUPT_INT_1,
+	       sdev->regs + DMA_ABORT_INTERRUPT);
+	if (READ_ONCE(sdev->dma_irq_armed))
+		complete(&sdev->dma_completion);
+	return IRQ_HANDLED;
+}
+
+static int sm750_dma_irq_init(struct sm750_drm_device *sdev)
+{
+	int ret;
+
+	if (!sdev->pdev->irq)
+		return -ENXIO;
+	init_completion(&sdev->dma_completion);
+	ret = devm_request_irq(&sdev->pdev->dev, sdev->pdev->irq,
+			       sm750_dma_irq_handler, IRQF_SHARED,
+			       SM750_DRM_NAME "-dma", sdev);
+	if (ret)
+		return ret;
+	sdev->dma_irq_mask_saved = peek32(INT_MASK);
+	poke32(INT_MASK, sdev->dma_irq_mask_saved | INT_MASK_DMA1);
+	sdev->dma_irq_enabled = true;
+	ret = devm_add_action_or_reset(&sdev->pdev->dev,
+				       sm750_dma_irq_disable, sdev);
+	if (ret)
+		return ret;
+	return 0;
+}
+
 static void sm750_dma_abort(struct sm750_drm_device *sdev)
 {
 	u32 control = peek32(DMA_ABORT_INTERRUPT);
@@ -1268,6 +1350,8 @@ static void sm750_dma_abort(struct sm750_drm_device *sdev)
 static int sm750_dma_transfer(struct sm750_drm_device *sdev,
 			      u32 destination, size_t size)
 {
+	bool irq_completion = sdev->dma_irq_enabled;
+	unsigned long completed = 0;
 	u32 control;
 	int ret;
 
@@ -1281,24 +1365,47 @@ static int sm750_dma_transfer(struct sm750_drm_device *sdev,
 	control &= ~(DMA_ABORT_INTERRUPT_ABORT_1 |
 		     DMA_ABORT_INTERRUPT_INT_1);
 	poke32(DMA_ABORT_INTERRUPT, control);
+	if (irq_completion) {
+		reinit_completion(&sdev->dma_completion);
+		WRITE_ONCE(sdev->dma_irq_armed, true);
+	}
 	poke32(DMA_1_DESTINATION,
 		destination & DMA_1_DESTINATION_ADDRESS_MASK);
 	dma_wmb();
 	poke32(DMA_1_SIZE_CONTROL,
 		DMA_1_SIZE_CONTROL_STATUS |
 		((size - sizeof(u32)) & DMA_1_SIZE_CONTROL_SIZE_MASK));
-	ret = readl_poll_timeout_atomic(sdev->regs + DMA_ABORT_INTERRUPT,
-		control, control & DMA_ABORT_INTERRUPT_INT_1, 1,
-		SM750_DRM_DMA_TIMEOUT_US);
+	if (irq_completion) {
+		completed = wait_for_completion_timeout(&sdev->dma_completion,
+			max_t(unsigned long, 1,
+			      usecs_to_jiffies(SM750_DRM_DMA_TIMEOUT_US)));
+		WRITE_ONCE(sdev->dma_irq_armed, false);
+		ret = completed ? 0 : -ETIMEDOUT;
+	} else {
+		ret = readl_poll_timeout_atomic(
+			sdev->regs + DMA_ABORT_INTERRUPT, control,
+			control & DMA_ABORT_INTERRUPT_INT_1, 1,
+			SM750_DRM_DMA_TIMEOUT_US);
+	}
 	if (!ret) {
-		/* A zero write acknowledges the completed channel-1 interrupt. */
+		if (!irq_completion) {
+			/* A zero write acknowledges channel-1 completion. */
+			poke32(DMA_ABORT_INTERRUPT,
+				control & ~DMA_ABORT_INTERRUPT_INT_1);
+		}
+		return 0;
+	}
+	control = peek32(DMA_ABORT_INTERRUPT);
+	if (irq_completion && (control & DMA_ABORT_INTERRUPT_INT_1)) {
 		poke32(DMA_ABORT_INTERRUPT,
 			control & ~DMA_ABORT_INTERRUPT_INT_1);
+		drm_info(&sdev->drm,
+			 "DMA1 IRQ was not delivered; reverting to completion polling\n");
+		sm750_dma_irq_disable(sdev);
 		return 0;
-	} else {
-		drm_err(&sdev->drm,
-			"DMA1 shadow upload timed out; using CPU copies from now on\n");
 	}
+	drm_err(&sdev->drm,
+		"DMA1 shadow upload timed out; using CPU copies from now on\n");
 
 	sm750_dma_abort(sdev);
 	sm750_enable_dma(0);
@@ -1466,6 +1573,7 @@ static void sm750_dma_stop(void *data)
 {
 	struct sm750_drm_device *sdev = data;
 
+	sm750_dma_irq_disable(sdev);
 	sdev->dma_pending_size = 0;
 	sm750_dma_abort(sdev);
 	sm750_enable_dma(0);
@@ -1826,19 +1934,19 @@ static void sm750_unscaled_upload_span(struct sm750_drm_device *sdev,
 				 dst_x, dst_x + count);
 }
 
-static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
-				     struct drm_plane_state *plane_state,
-				     const struct drm_rect *rect)
+static void sm750_shadow_source_rect_locked(struct sm750_drm_device *sdev,
+					    const struct iosys_map *src,
+					    unsigned int source_pitch,
+					    bool use_async_source,
+					    const struct drm_rect *rect)
 {
-	struct drm_shadow_plane_state *shadow =
-		to_drm_shadow_plane_state(plane_state);
-	const struct iosys_map *src = &shadow->data[0];
 	unsigned int width = drm_rect_width(rect);
 	unsigned int y1;
 	unsigned int y2;
 	unsigned int y;
 
-	if (!width || drm_rect_height(rect) <= 0 || iosys_map_is_null(src))
+	if (!width || drm_rect_height(rect) <= 0 ||
+	    (!use_async_source && iosys_map_is_null(src)))
 		return;
 	y1 = clamp_t(int, rect->y1, 0, sdev->shadow_source_height);
 	y2 = clamp_t(int, rect->y2, 0, sdev->shadow_source_height);
@@ -1856,12 +1964,29 @@ static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
 			unsigned int src_x2 = clamp_t(int, rect->x2, 0,
 					     sdev->softscale_source_width);
 			unsigned int x;
-			size_t src_offset =
-				(size_t)y * plane_state->fb->pitches[0];
+			size_t src_offset = (size_t)y * source_pitch;
 
 			if (src_x1 >= src_x2)
 				continue;
-			if (!src->is_iomem) {
+			if (use_async_source) {
+				unsigned int copy_x1 = snapshot &&
+					sdev->shadow_source_snapshot_valid ? src_x1 : 0;
+				unsigned int copy_x2 = snapshot &&
+					sdev->shadow_source_snapshot_valid ? src_x2 :
+					sdev->softscale_source_width;
+
+				mutex_lock(&sdev->async_lock);
+				if (sdev->async_stopping) {
+					mutex_unlock(&sdev->async_lock);
+					return;
+				}
+				memcpy(sdev->dither_source_line + copy_x1,
+				       sdev->async_source +
+					(size_t)y * SM750_DRM_MAX_WIDTH + copy_x1,
+				       (copy_x2 - copy_x1) * sizeof(u32));
+				mutex_unlock(&sdev->async_lock);
+				source_row = sdev->dither_source_line;
+			} else if (!src->is_iomem) {
 				source_row = (const u32 *)((const u8 *)src->vaddr +
 							 src_offset);
 			} else if (snapshot && sdev->shadow_source_snapshot_valid) {
@@ -1928,9 +2053,21 @@ static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
 		if (src_x1 >= src_x2)
 			continue;
 		width = src_x2 - src_x1;
-		src_offset = (size_t)y * plane_state->fb->pitches[0] +
+		src_offset = (size_t)y * source_pitch +
 			(size_t)src_x1 * sizeof(u32);
-		if (!src->is_iomem) {
+		if (use_async_source) {
+			mutex_lock(&sdev->async_lock);
+			if (sdev->async_stopping) {
+				mutex_unlock(&sdev->async_lock);
+				return;
+			}
+			memcpy(sdev->dither_source_line,
+			       sdev->async_source +
+				(size_t)y * SM750_DRM_MAX_WIDTH + src_x1,
+			       width * sizeof(u32));
+			mutex_unlock(&sdev->async_lock);
+			source_span = sdev->dither_source_line;
+		} else if (!src->is_iomem) {
 			source_span = (const u32 *)((const u8 *)src->vaddr +
 						  src_offset);
 		} else {
@@ -1966,6 +2103,17 @@ static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
 	    rect->x2 >= sdev->shadow_source_width &&
 	    rect->y2 >= sdev->shadow_source_height)
 		sdev->rgb565_scanout_snapshot_valid = true;
+}
+
+static void sm750_shadow_rect_locked(struct sm750_drm_device *sdev,
+				     struct drm_plane_state *plane_state,
+				     const struct drm_rect *rect)
+{
+	struct drm_shadow_plane_state *shadow =
+		to_drm_shadow_plane_state(plane_state);
+
+	sm750_shadow_source_rect_locked(sdev, &shadow->data[0],
+					plane_state->fb->pitches[0], false, rect);
 }
 
 static void sm750_shadow_rect(struct sm750_drm_device *sdev,
@@ -2042,6 +2190,168 @@ static void sm750_process_damage_rects(struct sm750_drm_device *sdev,
 
 	for (i = 0; i < count; i++)
 		sm750_shadow_rect_locked(sdev, state, &rects[i]);
+}
+
+static void sm750_damage_add_bounded(struct drm_rect *rects,
+				     unsigned int *count,
+				     const struct drm_rect *damage)
+{
+	struct drm_rect merged = *damage;
+	unsigned int i;
+
+	if (sm750_damage_add(rects, count, damage))
+		return;
+	for (i = 0; i < *count; i++) {
+		merged.x1 = min(merged.x1, rects[i].x1);
+		merged.y1 = min(merged.y1, rects[i].y1);
+		merged.x2 = max(merged.x2, rects[i].x2);
+		merged.y2 = max(merged.y2, rects[i].y2);
+	}
+	rects[0] = merged;
+	*count = 1;
+}
+
+static void sm750_async_copy_rect_locked(struct sm750_drm_device *sdev,
+					 const struct iosys_map *src,
+					 unsigned int source_pitch,
+					 const struct drm_rect *rect)
+{
+	unsigned int x1 = clamp_t(int, rect->x1, 0,
+					 sdev->shadow_source_width);
+	unsigned int x2 = clamp_t(int, rect->x2, 0,
+					 sdev->shadow_source_width);
+	unsigned int y1 = clamp_t(int, rect->y1, 0,
+					 sdev->shadow_source_height);
+	unsigned int y2 = clamp_t(int, rect->y2, 0,
+					 sdev->shadow_source_height);
+	unsigned int y;
+
+	if (x1 >= x2 || y1 >= y2)
+		return;
+	for (y = y1; y < y2; y++) {
+		u32 *destination = sdev->async_source +
+			(size_t)y * SM750_DRM_MAX_WIDTH + x1;
+		size_t source_offset = (size_t)y * source_pitch +
+			(size_t)x1 * sizeof(u32);
+		size_t size = (x2 - x1) * sizeof(u32);
+
+		if (!src->is_iomem)
+			memcpy(destination,
+			       (const u8 *)src->vaddr + source_offset, size);
+		else
+			iosys_map_memcpy_from(destination, src, source_offset, size);
+	}
+}
+
+static bool sm750_async_seed_source(struct sm750_drm_device *sdev,
+					    struct drm_plane_state *state)
+{
+	struct drm_shadow_plane_state *shadow =
+		to_drm_shadow_plane_state(state);
+	struct drm_rect full = {
+		.x1 = 0,
+		.y1 = 0,
+		.x2 = sdev->shadow_source_width,
+		.y2 = sdev->shadow_source_height,
+	};
+
+	if (!sdev->shadow_workqueue || !sdev->async_source || !state->fb ||
+	    iosys_map_is_null(&shadow->data[0]))
+		return false;
+	mutex_lock(&sdev->async_lock);
+	sdev->async_stopping = false;
+	sm750_async_copy_rect_locked(sdev, &shadow->data[0],
+				      state->fb->pitches[0], &full);
+	sdev->async_damage_count = 0;
+	sdev->async_source_valid = true;
+	mutex_unlock(&sdev->async_lock);
+	return true;
+}
+
+static void sm750_async_shadow_work(struct work_struct *work)
+{
+	struct sm750_drm_device *sdev = container_of(work,
+			struct sm750_drm_device, shadow_work);
+	struct drm_rect rects[SM750_DRM_MAX_DAMAGE_RECTS];
+	unsigned int count;
+	unsigned int i;
+
+	for (;;) {
+		mutex_lock(&sdev->async_lock);
+		if (sdev->async_stopping || !sdev->async_source_valid ||
+		    !sdev->async_damage_count) {
+			mutex_unlock(&sdev->async_lock);
+			break;
+		}
+		count = sdev->async_damage_count;
+		memcpy(rects, sdev->async_damage,
+		       count * sizeof(*rects));
+		sdev->async_damage_count = 0;
+		mutex_unlock(&sdev->async_lock);
+
+		mutex_lock(&sdev->shadow_lock);
+		for (i = 0; i < count; i++)
+			sm750_shadow_source_rect_locked(sdev, NULL,
+				SM750_DRM_MAX_WIDTH * sizeof(u32), true,
+				&rects[i]);
+		sm750_shadow_finish_uploads(sdev);
+		mutex_unlock(&sdev->shadow_lock);
+	}
+}
+
+static bool sm750_async_queue_damage(struct sm750_drm_device *sdev,
+				     struct drm_plane_state *state,
+				     struct drm_rect *rects,
+				     unsigned int count)
+{
+	struct drm_shadow_plane_state *shadow =
+		to_drm_shadow_plane_state(state);
+	struct drm_rect full = {
+		.x1 = 0,
+		.y1 = 0,
+		.x2 = sdev->shadow_source_width,
+		.y2 = sdev->shadow_source_height,
+	};
+	unsigned int i;
+
+	if (!count || !sdev->shadow_workqueue || !sdev->async_source ||
+	    !state->fb || iosys_map_is_null(&shadow->data[0]))
+		return false;
+	mutex_lock(&sdev->async_lock);
+	if (sdev->async_stopping) {
+		mutex_unlock(&sdev->async_lock);
+		return false;
+	}
+	if (!sdev->async_source_valid) {
+		sm750_async_copy_rect_locked(sdev, &shadow->data[0],
+					      state->fb->pitches[0], &full);
+		sdev->async_damage[0] = full;
+		sdev->async_damage_count = 1;
+		sdev->async_source_valid = true;
+	} else {
+		for (i = 0; i < count; i++) {
+			sm750_async_copy_rect_locked(sdev, &shadow->data[0],
+					      state->fb->pitches[0], &rects[i]);
+			sm750_damage_add_bounded(sdev->async_damage,
+						 &sdev->async_damage_count,
+						 &rects[i]);
+		}
+	}
+	mutex_unlock(&sdev->async_lock);
+	queue_work(sdev->shadow_workqueue, &sdev->shadow_work);
+	return true;
+}
+
+static void sm750_async_quiesce(struct sm750_drm_device *sdev)
+{
+	if (!sdev->shadow_workqueue)
+		return;
+	mutex_lock(&sdev->async_lock);
+	sdev->async_stopping = true;
+	sdev->async_source_valid = false;
+	sdev->async_damage_count = 0;
+	mutex_unlock(&sdev->async_lock);
+	cancel_work_sync(&sdev->shadow_work);
 }
 
 static void sm750_cursor_disable_locked(struct sm750_drm_device *sdev)
@@ -2464,6 +2774,7 @@ static void sm750_pipe_enable(struct drm_simple_display_pipe *pipe,
 	int ret;
 
 	if (sdev->shadow_scanout) {
+		sm750_async_quiesce(sdev);
 		sdev->softscale_active = sm750_mode_is_softscaled(
 			&crtc_state->adjusted_mode);
 		sdev->softscale_source_width = sdev->softscale_active ?
@@ -2490,6 +2801,7 @@ static void sm750_pipe_enable(struct drm_simple_display_pipe *pipe,
 		damage.x2 = crtc_state->adjusted_mode.hdisplay;
 		damage.y2 = crtc_state->adjusted_mode.vdisplay;
 		sm750_shadow_rect(sdev, plane_state, &damage);
+		sm750_async_seed_source(sdev, plane_state);
 	} else {
 		ret = sm750_scanout_offset(plane_state->fb, &offset);
 		if (ret)
@@ -2507,6 +2819,7 @@ static void sm750_pipe_enable(struct drm_simple_display_pipe *pipe,
 		return;
 	}
 fail:
+	sm750_async_quiesce(sdev);
 	sdev->softscale_active = false;
 	sdev->softscale_source_width = 0;
 	sdev->shadow_source_width = 0;
@@ -2528,22 +2841,23 @@ static void sm750_pipe_update(struct drm_simple_display_pipe *pipe,
 	u32 offset;
 
 	if (sdev->shadow_scanout) {
-		mutex_lock(&sdev->shadow_lock);
 		drm_atomic_helper_damage_iter_init(&iter, old_plane_state, state);
-		drm_atomic_for_each_plane_damage(&iter, &damage) {
-			if (sm750_damage_add(rects, &rect_count, &damage))
-				continue;
+		drm_atomic_for_each_plane_damage(&iter, &damage)
+			sm750_damage_add_bounded(rects, &rect_count, &damage);
+		if (rect_count && sm750_async_queue_damage(sdev, state, rects,
+							 rect_count))
+			goto event;
+		if (rect_count) {
+			mutex_lock(&sdev->shadow_lock);
 			sm750_process_damage_rects(sdev, state, rects, rect_count);
-			rect_count = 0;
-			sm750_damage_add(rects, &rect_count, &damage);
+			sm750_shadow_finish_uploads(sdev);
+			mutex_unlock(&sdev->shadow_lock);
 		}
-		sm750_process_damage_rects(sdev, state, rects, rect_count);
-		sm750_shadow_finish_uploads(sdev);
-		mutex_unlock(&sdev->shadow_lock);
 	} else if (state->fb &&
 		 !sm750_scanout_offset(state->fb, &offset))
 		poke32(SM750_DRM_FB_ADDRESS, SM750_DRM_FB_ADDRESS_STATUS |
 		       (offset & SM750_DRM_FB_ADDRESS_MASK));
+event:
 	if (!pipe->crtc.state->mode_changed)
 		sm750_arm_vblank_event(pipe);
 }
@@ -2552,6 +2866,7 @@ static void sm750_pipe_disable(struct drm_simple_display_pipe *pipe)
 {
 	struct sm750_drm_device *sdev = pipe_to_sm750(pipe);
 
+	sm750_async_quiesce(sdev);
 	drm_crtc_vblank_off(&pipe->crtc);
 	sm750_send_vblank_event(pipe);
 	if (sdev->hardware_cursor) {
@@ -2782,6 +3097,15 @@ static void sm750_free_shadow_buffer(void *data)
 	kvfree(data);
 }
 
+static void sm750_destroy_shadow_workqueue(void *data)
+{
+	struct sm750_drm_device *sdev = data;
+
+	sm750_async_quiesce(sdev);
+	destroy_workqueue(sdev->shadow_workqueue);
+	sdev->shadow_workqueue = NULL;
+}
+
 static int sm750_pci_probe(struct pci_dev *pdev,
 			   const struct pci_device_id *id)
 {
@@ -2847,6 +3171,8 @@ static int sm750_pci_probe(struct pci_dev *pdev,
 	mutex_init(&sdev->mode_lock);
 	mutex_init(&sdev->shadow_lock);
 	mutex_init(&sdev->cursor_lock);
+	mutex_init(&sdev->async_lock);
+	INIT_WORK(&sdev->shadow_work, sm750_async_shadow_work);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	spin_lock_init(&sdev->vblank_lock);
 	hrtimer_setup(&sdev->vblank_timer, sm750_vblank_timer_fn,
@@ -2886,6 +3212,10 @@ static int sm750_pci_probe(struct pci_dev *pdev,
 				(size_t)SM750_DRM_PHYSICAL_MAX_WIDTH *
 				SM750_DRM_MAX_HEIGHT,
 				sizeof(*sdev->rgb565_scanout_snapshot), GFP_KERNEL);
+		if (async_updates)
+			sdev->async_source = kvcalloc(
+				(size_t)SM750_DRM_MAX_WIDTH * SM750_DRM_MAX_HEIGHT,
+				sizeof(*sdev->async_source), GFP_KERNEL);
 		sdev->softscale_output_line = devm_kmalloc_array(&pdev->dev,
 			SM750_DITHER_SCALE_MAX_SAMPLES,
 			sizeof(*sdev->softscale_output_line), GFP_KERNEL);
@@ -2904,6 +3234,7 @@ static int sm750_pci_probe(struct pci_dev *pdev,
 		    (double_shadow && !sdev->shadow_source_snapshot) ||
 		    (double_shadow && sdev->rgb565 &&
 		     !sdev->rgb565_scanout_snapshot) ||
+		    (async_updates && !sdev->async_source) ||
 		    !sdev->softscale_output_line || !sdev->xrgb_output_line ||
 		    (sdev->hardware_cursor &&
 		     (!sdev->cursor_source || !sdev->cursor_image)))
@@ -2919,6 +3250,21 @@ static int sm750_pci_probe(struct pci_dev *pdev,
 			ret = devm_add_action_or_reset(&pdev->dev,
 					sm750_free_shadow_buffer,
 					sdev->rgb565_scanout_snapshot);
+			if (ret)
+				return ret;
+		}
+		if (sdev->async_source) {
+			ret = devm_add_action_or_reset(&pdev->dev,
+					sm750_free_shadow_buffer,
+					sdev->async_source);
+			if (ret)
+				return ret;
+			sdev->shadow_workqueue = alloc_ordered_workqueue(
+				"sm750-shadow", WQ_HIGHPRI | WQ_MEM_RECLAIM);
+			if (!sdev->shadow_workqueue)
+				return -ENOMEM;
+			ret = devm_add_action_or_reset(&pdev->dev,
+					sm750_destroy_shadow_workqueue, sdev);
 			if (ret)
 				return ret;
 		}
@@ -2950,8 +3296,14 @@ static int sm750_pci_probe(struct pci_dev *pdev,
 				return ret;
 		}
 		if (enable_dma && !disable_dma) {
+			ret = sm750_dma_irq_init(sdev);
+			if (ret)
+				drm_warn(&sdev->drm,
+					 "DMA1 IRQ unavailable (%d); using completion polling on the shadow worker\n",
+					 ret);
 			ret = sm750_dma_init(sdev);
 			if (ret) {
+				sm750_dma_irq_disable(sdev);
 				drm_warn(&sdev->drm,
 					 "DMA1 verification failed (%d); retaining CPU shadow uploads\n",
 					 ret);
@@ -3020,6 +3372,13 @@ static int sm750_pci_probe(struct pci_dev *pdev,
 	if (sdev->hardware_cursor)
 		drm_info(&sdev->drm,
 			 "64x64 hardware cursor plane enabled with ARGB palette conversion\n");
+	if (sdev->shadow_workqueue)
+		drm_info(&sdev->drm,
+			 "coalesced asynchronous shadow updates enabled\n");
+	if (sdev->shadow_dma_enabled && sdev->dma_irq_enabled)
+		drm_info(&sdev->drm,
+			 "DMA1 interrupt-driven completion enabled on IRQ %u\n",
+			 sdev->pdev->irq);
 	return 0;
 }
 

@@ -22,6 +22,7 @@ check: all tests/check-vblank tests/test-bbdither-rgb565 \
 	./tests/check-softscale-codegen.sh src/sm750_dither.o
 	./tests/check-hardware-cursor.sh
 	./tests/check-shadow-dma.sh
+	./tests/check-shadow-async.sh
 	./tests/check-shadow-source-damage.sh
 	./tests/test-bbdither-rgb565
 	./tests/test-scale-optimizations

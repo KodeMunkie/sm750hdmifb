@@ -8,7 +8,7 @@ source_file=$project_dir/src/sm750_drm.c
 for requirement in \
 	'module_param(enable_dma, bool, 0444);' \
 	'module_param(disable_dma, bool, 0444);' \
-	'#define SM750_DRM_DEFAULT_ENABLE_DMA 0' \
+	'#define SM750_DRM_DEFAULT_ENABLE_DMA 1' \
 	'static unsigned int shadow_dma_min_bytes = 4096;' \
 	'dma_set_mask_and_coherent(&sdev->pdev->dev, DMA_BIT_MASK(31))' \
 	'dmam_alloc_coherent(&sdev->pdev->dev,' \
@@ -20,14 +20,19 @@ for requirement in \
 	'sdev->dma_pending_size + size <= SM750_DRM_DMA_STAGING_SIZE' \
 	'if (size == SM750_DRM_DMA_BATCH_ROW_SIZE)' \
 	'sm750_dma_flush_pending(sdev);' \
-	'readl_poll_timeout_atomic(sdev->regs + DMA_ABORT_INTERRUPT,' \
-	'control, control & DMA_ABORT_INTERRUPT_INT_1, 1,' \
+	'readl_poll_timeout_atomic(' \
+	'control & DMA_ABORT_INTERRUPT_INT_1, 1,' \
 	'control & ~DMA_ABORT_INTERRUPT_INT_1);' \
 	'((size - sizeof(u32)) & DMA_1_SIZE_CONTROL_SIZE_MASK)' \
 	'#define SM750_DRM_DMA_GUARD_WORDS 4' \
 	'0x51a70000U + i' \
 	'0xa75e0000U + i' \
 	'DMA_ABORT_INTERRUPT_ABORT_1' \
+	'devm_request_irq(&sdev->pdev->dev, sdev->pdev->irq,' \
+	'IRQF_SHARED' \
+	'wait_for_completion_timeout(&sdev->dma_completion,' \
+	'DMA1 IRQ was not delivered; reverting to completion polling' \
+	'sm750_dma_irq_disable(sdev);' \
 	'DMA1 shadow uploads enabled after off-screen transfer verification' \
 	'sdev->shadow_dma_enabled = false;' \
 	'if (enable_dma && !disable_dma) {' \

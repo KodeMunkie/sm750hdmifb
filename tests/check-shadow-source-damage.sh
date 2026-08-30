@@ -36,7 +36,7 @@ for requirement in \
 	'changed_pixels * SM750_DRM_DENSE_RUN_DENOMINATOR >=' \
 	'if (sdev->rgb565_scanout_snapshot_valid) {' \
 	'sm750_damage_lossless_union(' \
-	'sm750_damage_add(rects, &rect_count, &damage)' \
+	'sm750_damage_add_bounded(rects, &rect_count, &damage)' \
 	'bool shadow_write_pending;' \
 	'sm750_shadow_finish_uploads(sdev);' \
 	'if (sdev->shadow_write_pending)' \

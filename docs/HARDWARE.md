@@ -39,9 +39,20 @@ specification suggests it is redundant.
 | Cursors | Two hardware cursor layers | Exposes the primary 64x64 cursor plane with a software fallback. |
 | Scaling | Hardware video/layer scaling is advertised | Ultrawide desktop compression is implemented in software before scanout. |
 
-The driver does not make the silicon natively capable of a 2560-wide raster.
-Its new practical capabilities come from DRM/KMS integration, HDMI transmitter
-control, damage-aware conversion, custom dithering and software scaling.
+At high resolutions, the PCIe 1.1 x1 host link is the practical update-rate
+limit. XRGB8888 shadow uploads consume four bytes per physical pixel and cannot
+keep full-screen desktop updates responsive on the tested link. The default
+dithered RGB565 path reduces uploads to two bytes per physical pixel. Ultrawide
+source rows are first compressed to the 2048-pixel hardware width, optionally
+sharpened by 8%, converted with the custom dither and 94% green correction, and
+then uploaded to scanout memory.
+
+The card's highest real hardware scanout width is 2048 pixels. The driver does
+not make the silicon natively capable of a 2464- or 2560-wide raster. Those are
+logical workspaces compressed in software before the card generates its
+2048-wide signal. Its new practical capabilities come from DRM/KMS integration,
+HDMI transmitter control, changed-region conversion, custom dithering and
+software scaling.
 
 References:
 

@@ -5,7 +5,7 @@ set -euo pipefail
 readonly project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 readonly package=sm750hdmifb
 readonly module=sm750hdmidrm
-readonly version=0.5.4
+readonly version=0.5.5
 readonly arch=all
 readonly build_root="${project_dir}/build/package/${package}_${version}_${arch}"
 readonly dist_dir="${project_dir}/dist"
@@ -65,7 +65,8 @@ Replaces: sm750hdmi-dkms, sm750hdmidrm-xrgb8888-dkms, sm750hdmidrm-rgb565-dither
 Description: Experimental DRM/KMS driver for SM750G10 HDMI cards
  Out-of-tree DRM driver for SE-DP750A-HDMI boards using an SM750G10 and
  external SiI9024A HDMI transmitter. Includes EDID, atomic modesetting,
- RGB565 dither, wide softscaling, hardware cursor and DMA shadow uploads.
+ RGB565 dither, wide softscaling, coalesced shadow updates, hardware cursor
+ and interrupt-completed DMA shadow uploads.
 EOF
 
 printf '/etc/modprobe.d/%s.conf\n/etc/modules-load.d/%s.conf\n' \
