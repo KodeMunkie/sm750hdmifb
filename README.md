@@ -36,7 +36,7 @@ git clone https://github.com/KodeMunkie/sm750hdmifb.git
 cd sm750hdmifb
 make check
 ./build-package.sh
-sudo apt install ./dist/sm750hdmifb_0.5.5_all.deb
+sudo apt install ./dist/sm750hdmifb_0.5.6_all.deb
 sudo reboot
 ```
 

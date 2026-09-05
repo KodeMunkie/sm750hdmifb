@@ -5,8 +5,8 @@ set -euo pipefail
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 dist_dir=$project_dir/dist
 module=$project_dir/src/sm750hdmidrm.ko
-deb=$dist_dir/sm750hdmifb_0.5.5_all.deb
-source_archive=$dist_dir/sm750hdmifb-0.5.5-source.tar.gz
+deb=$dist_dir/sm750hdmifb_0.5.6_all.deb
+source_archive=$dist_dir/sm750hdmifb-0.5.6-source.tar.gz
 report=$dist_dir/RELEASE-AUDIT.txt
 
 for required in "$module" "$deb" "$source_archive" "$project_dir/LICENSE"; do
@@ -16,7 +16,7 @@ for required in "$module" "$deb" "$source_archive" "$project_dir/LICENSE"; do
 	}
 done
 
-if rg -n 'sm750hdmifb[-_]0\.5\.[0-4]' \
+if rg -n 'sm750hdmifb[-_]0\.5\.[0-5]' \
 	"$project_dir/.github/workflows/build.yml"; then
 	echo "Manual build workflow contains a stale release artifact version." >&2
 	exit 1
@@ -91,8 +91,8 @@ mkdir -p "$dist_dir"
 	tar -tzf "$source_archive"
 	echo
 	echo "CHECKSUMS"
-	(cd "$dist_dir" && sha256sum sm750hdmifb_0.5.5_all.deb \
-		sm750hdmifb-0.5.5-source.tar.gz)
+	(cd "$dist_dir" && sha256sum sm750hdmifb_0.5.6_all.deb \
+		sm750hdmifb-0.5.6-source.tar.gz)
 } >"$report"
 
 echo "Release audit passed: $report"

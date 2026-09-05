@@ -3,7 +3,7 @@
 set -e
 
 name=${DPKG_MAINTSCRIPT_PACKAGE:-sm750hdmifb}
-version=0.5.5
+version=0.5.6
 
 disable_predecessor_file() {
 	path=$1
@@ -25,6 +25,18 @@ if ! "/usr/lib/$name/write-xorg-config" \
 fi
 
 if command -v dkms >/dev/null 2>&1; then
+	# Older package releases did not unregister themselves on upgrade.  Once
+	# their /usr/src tree is replaced, DKMS cannot read their dkms.conf and
+	# aborts automatic installation before reaching this release.
+	for stale_tree in /var/lib/dkms/"$name"/*; do
+		[ -d "$stale_tree" ] || continue
+		stale_version=${stale_tree##*/}
+		[ "$stale_version" = "$version" ] && continue
+		[ -r "$stale_tree/source/dkms.conf" ] && continue
+		echo "Removing stale DKMS registration: $name/$stale_version"
+		rm -rf -- "$stale_tree"
+	done
+
 	for predecessor in \
 		sm750hdmifb:0.2.2 \
 		sm750hdmi-dkms:0.3.0 \

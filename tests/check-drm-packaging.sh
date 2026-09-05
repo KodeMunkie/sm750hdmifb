@@ -10,12 +10,16 @@ bash -n "$builder" "$project_dir/packaging/write-xorg-config.sh"
 sh -n "$project_dir/packaging/drm-postinst" \
 	"$project_dir/packaging/drm-prerm" \
 	"$project_dir/packaging/drm-postrm"
-grep -F 'PACKAGE_VERSION="0.5.5"' "$dkms_config" >/dev/null
+grep -F 'PACKAGE_VERSION="0.5.6"' "$dkms_config" >/dev/null
 grep -F 'BUILT_MODULE_NAME[0]="sm750hdmidrm"' "$dkms_config" >/dev/null
 grep -F 'BUILD_EXCLUSIVE_KERNEL="^(6\\.(1[7-9]|[2-9][0-9])\\.|[7-9]\\.|[1-9][0-9]\\.)"' \
 	"$dkms_config" >/dev/null
 grep -F '6.1[7-9].*|6.[2-9][0-9].*|[7-9].*|[1-9][0-9].*) ;;' \
 	"$project_dir/packaging/drm-postinst" >/dev/null
+grep -F 'Removing stale DKMS registration:' \
+	"$project_dir/packaging/drm-postinst" >/dev/null
+grep -F '[ "$1" = remove ] || [ "$1" = deconfigure ] || [ "$1" = upgrade ]' \
+	"$project_dir/packaging/drm-prerm" >/dev/null
 grep -F -- "-name 'linux-headers-6.17.*-generic'" \
 	"$project_dir/.github/workflows/build.yml" >/dev/null
 grep -F 'readonly package=sm750hdmifb' "$builder" >/dev/null
