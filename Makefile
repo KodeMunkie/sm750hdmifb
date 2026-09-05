@@ -17,6 +17,7 @@ check: all tests/check-vblank tests/test-bbdither-rgb565 \
 	./tests/check-drm-policy.sh
 	./tests/check-drm-xorg-config.sh
 	./tests/check-drm-packaging.sh
+	./tests/check-release-version.sh
 	./tests/check-softscale-map.sh
 	./tests/check-softscale-sharpen.sh
 	./tests/check-softscale-codegen.sh src/sm750_dither.o
