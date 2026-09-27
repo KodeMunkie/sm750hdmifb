@@ -11,15 +11,24 @@ for requirement in \
 	'#define SM750_DRM_DEFAULT_ENABLE_DMA 1' \
 	'static unsigned int shadow_dma_min_bytes = 4096;' \
 	'dma_set_mask_and_coherent(&sdev->pdev->dev, DMA_BIT_MASK(31))' \
-	'dmam_alloc_coherent(&sdev->pdev->dev,' \
+	'dmam_alloc_coherent(' \
 	'#define SM750_DRM_DMA_BATCH_ROW_SIZE (2048 * sizeof(u16))' \
-	'#define SM750_DRM_DMA_BATCH_ROWS 8' \
+	'#define SM750_DRM_DMA_BATCH_ROWS 128' \
+	'#define SM750_DRM_DMA_STAGING_BUFFERS 2' \
 	'(SM750_DRM_DMA_BATCH_ROWS * SM750_DRM_DMA_BATCH_ROW_SIZE)' \
+	'void *dma_staging[SM750_DRM_DMA_STAGING_BUFFERS];' \
 	'size_t dma_pending_size;' \
+	'size_t dma_active_size;' \
+	'bool dma_active;' \
+	'module_param(dma_batch_rows, uint, 0644);' \
+	'READ_ONCE(dma_batch_rows), 1, SM750_DRM_DMA_BATCH_ROWS);' \
+	'size_t dma_batch_limit;' \
 	'destination == sdev->dma_pending_destination +' \
-	'sdev->dma_pending_size + size <= SM750_DRM_DMA_STAGING_SIZE' \
+	'sdev->dma_pending_size + size <= sdev->dma_batch_limit' \
 	'if (size == SM750_DRM_DMA_BATCH_ROW_SIZE)' \
-	'sm750_dma_flush_pending(sdev);' \
+	'sm750_dma_submit_pending(sdev);' \
+	'sm750_dma_complete_active(sdev);' \
+	'sdev->dma_fill_index ^= 1;' \
 	'readl_poll_timeout_atomic(' \
 	'control & DMA_ABORT_INTERRUPT_INT_1, 1,' \
 	'control & ~DMA_ABORT_INTERRUPT_INT_1);' \
@@ -45,12 +54,14 @@ for requirement in \
 	}
 done
 
-transfer_body=$(sed -n '/static int sm750_dma_transfer(/,/^}/p' "$source_file")
-if grep -F 'poke32(PCI_MASTER_BASE' <<<"$transfer_body" >/dev/null ||
-   grep -F 'poke32(DMA_1_SOURCE' <<<"$transfer_body" >/dev/null; then
-	echo "Invariant DMA source registers are still programmed per transfer" >&2
-	exit 1
-fi
+start_body=$(sed -n '/static int sm750_dma_start(/,/^}/p' "$source_file")
+for requirement in 'poke32(PCI_MASTER_BASE' 'poke32(DMA_1_SOURCE' \
+		'sdev->dma_active = true;' 'return 0;'; do
+	grep -F "$requirement" <<<"$start_body" >/dev/null || {
+		echo "DMA start does not select and launch a staging buffer" >&2
+		exit 1
+	}
+done
 
 awk 'BEGIN {
 	for (x1 = 0; x1 < 2048; x1++) {
@@ -73,6 +84,8 @@ awk 'BEGIN {
 	rows = 8
 	row = 4096
 	staging = rows * row
+	fill = 0
+	active = -1
 	pending_destination = 0
 	pending_size = row
 	next_destination = pending_destination + pending_size
@@ -86,6 +99,14 @@ awk 'BEGIN {
 		next_destination += row
 	}
 	if (pending_size != staging)
+		exit 1
+	# Submitting a full buffer makes it active and changes the CPU fill buffer.
+	active = fill
+	fill = 1 - fill
+	if (active != 0 || fill != 1)
+		exit 1
+	# The next batch is built in buffer 1 while DMA reads buffer 0.
+	if (fill == active)
 		exit 1
 }' /dev/null
 

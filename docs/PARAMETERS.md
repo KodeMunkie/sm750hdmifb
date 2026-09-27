@@ -11,15 +11,18 @@ build-time defaults.
 | Parameter | Default | Purpose |
 |---|---:|---|
 | `scanout_format` | `rgb565-bbdither` | `xrgb8888`, `rgb565`, or dithered `rgb565-bbdither`. The deprecated `rgb565-dither` alias remains accepted. |
-| `dither_green_gain` | `94` | Green-channel gain for `rgb565-bbdither`. The default enables the tuned correction; set `100` to disable correction without disabling the dither. |
+| `dither_green_gain` | `94` | Green-channel gain from 0 to 100 for `rgb565-bbdither`. |
 | `edid_only` | `1` | Use valid EDID modes instead of the driver catalogue. |
 | `softscale_wide` | `0` | Add logical 2464/2560x1080 modes when `edid_only=0`. |
 | `sharpen` | `0` | Apply fixed 8% sharpening after horizontal soft scaling. |
-| `double_shadow` | `0` | Add source and converted-output comparison snapshots alongside the DRM shadow framebuffer. This is not front/back page flipping; it avoids converting or uploading unchanged pixels. |
+| `double_shadow` | `0` | Snapshot source rows and trim update regions to pixels that really changed. |
 | `disable_hardware_cursor` | `0` | Set to `1` to use a software-rendered cursor instead of the 64x64 hardware plane. |
 | `async_updates` | `1` | Copy reported changed regions into a latest-frame mailbox and perform scaling, dithering and VRAM upload on a dedicated worker. Set to `0` to restore synchronous updates for diagnosis. |
 | `enable_dma` | `1` | Use optimized eight-row DMA1 uploads. Set to `0` to force write-combined CPU uploads. |
+| `dma_batch_rows` | `8` | Writable through sysfs. Sampled once per update, clamped to 1–128 rows. Two staging buffers reserve 512 KiB each to support runtime comparisons. |
+| `staging_timing` | `0` | Writable through sysfs. Log full-frame conversion/upload time and subsequent flip wait separately. Enable only during measurement. |
 | `disable_dma` | `0` | Deprecated safety veto. If set, CPU uploads are forced even when `enable_dma=1`. |
+| `backbuffer_staging` | `1` | Render an exact full-frame update into off-screen VRAM, then present it with the display controller's vblank-synchronised address flip. It is automatically unavailable when two scanout buffers do not fit. |
 | `shadow_dma_min_bytes` | `4096` | Smallest aligned upload span sent through DMA1. The one-RGB565-scanline default avoids DMA setup overhead for small interactive updates. Valid range is checked at probe. |
 | `preferred_width` | `0` | Preferred exposed mode width; use with height and refresh. |
 | `preferred_height` | `0` | Preferred exposed mode height. |

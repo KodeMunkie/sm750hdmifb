@@ -23,10 +23,12 @@ check: all tests/check-vblank tests/test-bbdither-rgb565 \
 	./tests/check-softscale-codegen.sh src/sm750_dither.o
 	./tests/check-hardware-cursor.sh
 	./tests/check-shadow-dma.sh
+	./tests/check-backbuffer-staging.sh
 	./tests/check-shadow-async.sh
 	./tests/check-shadow-source-damage.sh
 	./tests/test-bbdither-rgb565
 	./tests/test-scale-optimizations
+	python3 tests/test-staging-results.py
 
 check-all-kernels:
 	./tests/build-all-kernels.sh
@@ -46,3 +48,8 @@ tests/test-scale-optimizations: tests/test-scale-optimizations.c
 
 package:
 	./build-package.sh
+
+staging-benchmark: tools/staging-pattern
+
+tools/staging-pattern: tools/staging-pattern.c
+	$(CC) -O2 -Wall -Wextra -Werror -o $@ $< -lX11

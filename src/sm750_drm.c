@@ -7,6 +7,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
@@ -87,11 +88,13 @@
 #define SM750_DRM_CURSOR_SIZE \
 	(SM750_DRM_CURSOR_STRIDE * SM750_DRM_CURSOR_HEIGHT)
 #define SM750_DRM_DMA_BATCH_ROW_SIZE (2048 * sizeof(u16))
-#define SM750_DRM_DMA_BATCH_ROWS 8
+#define SM750_DRM_DMA_BATCH_ROWS 128
 #define SM750_DRM_DMA_STAGING_SIZE \
 	(SM750_DRM_DMA_BATCH_ROWS * SM750_DRM_DMA_BATCH_ROW_SIZE)
+#define SM750_DRM_DMA_STAGING_BUFFERS 2
 #define SM750_DRM_DMA_TEST_SIZE 256
 #define SM750_DRM_DMA_TIMEOUT_US 5000
+#define SM750_DRM_FLIP_TIMEOUT_US 50000
 #define SM750_DRM_DMA_GUARD_WORDS 4
 #define SM750_DRM_DAMAGE_SPLIT_GAP 64
 #define SM750_DRM_MAX_DAMAGE_RECTS 32
@@ -183,6 +186,9 @@ static bool disable_hardware_cursor =
 static bool enable_dma = SM750_DRM_DEFAULT_ENABLE_DMA;
 static bool disable_dma;
 static bool async_updates = SM750_DRM_DEFAULT_ASYNC_UPDATES;
+static bool backbuffer_staging = true;
+static unsigned int dma_batch_rows = 8;
+static bool staging_timing;
 static unsigned int shadow_dma_min_bytes = 4096;
 module_param(scanout_format, charp, 0444);
 module_param(dither_green_gain, uint, 0444);
@@ -194,6 +200,13 @@ module_param(disable_hardware_cursor, bool, 0444);
 module_param(enable_dma, bool, 0444);
 module_param(disable_dma, bool, 0444);
 module_param(async_updates, bool, 0444);
+module_param(backbuffer_staging, bool, 0444);
+module_param(dma_batch_rows, uint, 0644);
+module_param(staging_timing, bool, 0644);
+MODULE_PARM_DESC(dma_batch_rows,
+	"DMA batch rows, sampled per update and clamped to 1-128 (default 8)");
+MODULE_PARM_DESC(staging_timing,
+	"Log complete-frame upload and presentation timing for benchmarking");
 module_param(shadow_dma_min_bytes, uint, 0444);
 MODULE_PARM_DESC(scanout_format,
 	"Scanout backend: xrgb8888, rgb565, or rgb565-bbdither");
@@ -213,6 +226,8 @@ MODULE_PARM_DESC(disable_dma,
 	"Deprecated DMA safety veto; overrides enable_dma=1");
 MODULE_PARM_DESC(async_updates,
 	"Coalesce shadow damage on a dedicated worker (default enabled)");
+MODULE_PARM_DESC(backbuffer_staging,
+	"Stage complete shadow frames off-screen and present them at vblank");
 MODULE_PARM_DESC(shadow_dma_min_bytes,
 	"Minimum aligned shadow span for DMA (default 4096 bytes)");
 
@@ -248,16 +263,30 @@ struct sm750_drm_device {
 	u32 *xrgb_output_line;
 	u32 *cursor_source;
 	u8 *cursor_image;
-	void *dma_staging;
-	dma_addr_t dma_staging_address;
+	void *dma_staging[SM750_DRM_DMA_STAGING_BUFFERS];
+	dma_addr_t dma_staging_address[SM750_DRM_DMA_STAGING_BUFFERS];
 	struct completion dma_completion;
 	u16 *dither_output_line;
 	u32 cursor_offset;
 	u32 cursor_encoded_width;
-	u32 dma_master_base;
-	u32 dma_source_address;
+	u32 dma_master_base[SM750_DRM_DMA_STAGING_BUFFERS];
+	u32 dma_source_address[SM750_DRM_DMA_STAGING_BUFFERS];
 	u32 dma_pending_destination;
 	size_t dma_pending_size;
+	u32 dma_active_destination;
+	size_t dma_active_size;
+	size_t dma_batch_limit;
+	u64 staging_started_ns;
+	u32 staging_batches;
+	u64 staging_bytes;
+	unsigned int staging_rows;
+	bool staging_measure;
+	u32 shadow_upload_offset;
+	u32 scanout_offset;
+	u32 backbuffer_offset;
+	u32 scanout_frame_size;
+	unsigned int dma_fill_index;
+	unsigned int dma_active_index;
 	struct drm_rect async_damage[SM750_DRM_MAX_DAMAGE_RECTS];
 	unsigned int async_damage_count;
 	u32 shadow_source_width;
@@ -289,6 +318,10 @@ struct sm750_drm_device {
 	bool shadow_dma_broken;
 	bool dma_irq_enabled;
 	bool dma_irq_armed;
+	bool dma_active;
+	bool backbuffer_available;
+	bool backbuffer_ready;
+	bool backbuffer_mirror;
 	u32 dma_irq_mask_saved;
 	bool shadow_write_pending;
 	bool async_source_valid;
@@ -1347,15 +1380,15 @@ static void sm750_dma_abort(struct sm750_drm_device *sdev)
 		~DMA_ABORT_INTERRUPT_INT_1);
 }
 
-static int sm750_dma_transfer(struct sm750_drm_device *sdev,
-			      u32 destination, size_t size)
+static int sm750_dma_start(struct sm750_drm_device *sdev,
+			   unsigned int staging_index,
+			   u32 destination, size_t size)
 {
-	bool irq_completion = sdev->dma_irq_enabled;
-	unsigned long completed = 0;
 	u32 control;
-	int ret;
 
 	if (!size || size > SM750_DRM_DMA_STAGING_SIZE ||
+	    staging_index >= SM750_DRM_DMA_STAGING_BUFFERS ||
+	    sdev->dma_active ||
 	    !IS_ALIGNED(size, sizeof(u32)) ||
 	    !IS_ALIGNED(destination, sizeof(u32)) ||
 	    destination + size > sdev->vram_size)
@@ -1365,16 +1398,38 @@ static int sm750_dma_transfer(struct sm750_drm_device *sdev,
 	control &= ~(DMA_ABORT_INTERRUPT_ABORT_1 |
 		     DMA_ABORT_INTERRUPT_INT_1);
 	poke32(DMA_ABORT_INTERRUPT, control);
-	if (irq_completion) {
+	if (sdev->dma_irq_enabled) {
 		reinit_completion(&sdev->dma_completion);
 		WRITE_ONCE(sdev->dma_irq_armed, true);
 	}
+	poke32(PCI_MASTER_BASE,
+		sdev->dma_master_base[staging_index] &
+		PCI_MASTER_BASE_ADDRESS_MASK);
+	poke32(DMA_1_SOURCE, sdev->dma_source_address[staging_index]);
 	poke32(DMA_1_DESTINATION,
 		destination & DMA_1_DESTINATION_ADDRESS_MASK);
+	sdev->dma_active_index = staging_index;
+	sdev->dma_active_destination = destination;
+	sdev->dma_active_size = size;
+	sdev->dma_active = true;
+	sdev->staging_batches++;
+	sdev->staging_bytes += size;
 	dma_wmb();
 	poke32(DMA_1_SIZE_CONTROL,
 		DMA_1_SIZE_CONTROL_STATUS |
 		((size - sizeof(u32)) & DMA_1_SIZE_CONTROL_SIZE_MASK));
+	return 0;
+}
+
+static int sm750_dma_wait_active(struct sm750_drm_device *sdev)
+{
+	bool irq_completion = sdev->dma_irq_enabled;
+	unsigned long completed = 0;
+	u32 control;
+	int ret;
+
+	if (!sdev->dma_active)
+		return 0;
 	if (irq_completion) {
 		completed = wait_for_completion_timeout(&sdev->dma_completion,
 			max_t(unsigned long, 1,
@@ -1393,6 +1448,7 @@ static int sm750_dma_transfer(struct sm750_drm_device *sdev,
 			poke32(DMA_ABORT_INTERRUPT,
 				control & ~DMA_ABORT_INTERRUPT_INT_1);
 		}
+		sdev->dma_active = false;
 		return 0;
 	}
 	control = peek32(DMA_ABORT_INTERRUPT);
@@ -1402,6 +1458,7 @@ static int sm750_dma_transfer(struct sm750_drm_device *sdev,
 		drm_info(&sdev->drm,
 			 "DMA1 IRQ was not delivered; reverting to completion polling\n");
 		sm750_dma_irq_disable(sdev);
+		sdev->dma_active = false;
 		return 0;
 	}
 	drm_err(&sdev->drm,
@@ -1411,66 +1468,132 @@ static int sm750_dma_transfer(struct sm750_drm_device *sdev,
 	sm750_enable_dma(0);
 	sdev->shadow_dma_broken = true;
 	sdev->shadow_dma_enabled = false;
+	sdev->dma_active = false;
 	return ret;
 }
 
-static void sm750_dma_flush_pending(struct sm750_drm_device *sdev)
+static int sm750_dma_complete_active(struct sm750_drm_device *sdev)
 {
+	unsigned int staging_index;
+	u32 destination;
+	size_t size;
+	int ret;
+
+	if (!sdev->dma_active)
+		return 0;
+	staging_index = sdev->dma_active_index;
+	destination = sdev->dma_active_destination;
+	size = sdev->dma_active_size;
+	ret = sm750_dma_wait_active(sdev);
+	if (ret)
+		memcpy_toio(sdev->vram + destination,
+			sdev->dma_staging[staging_index], size);
+	return ret;
+}
+
+static void sm750_dma_submit_pending(struct sm750_drm_device *sdev)
+{
+	unsigned int staging_index;
+	u32 destination;
+	size_t size;
+
 	if (!sdev->dma_pending_size)
 		return;
-	if (!sdev->shadow_dma_enabled ||
-	    sm750_dma_transfer(sdev, sdev->dma_pending_destination,
-			       sdev->dma_pending_size))
-		memcpy_toio(sdev->vram + sdev->dma_pending_destination,
-			    sdev->dma_staging, sdev->dma_pending_size);
+	staging_index = sdev->dma_fill_index;
+	destination = sdev->dma_pending_destination;
+	size = sdev->dma_pending_size;
+	sm750_dma_complete_active(sdev);
+	if (sdev->shadow_dma_enabled &&
+	    !sm750_dma_start(sdev, staging_index, destination, size))
+		sdev->dma_fill_index ^= 1;
+	else
+		memcpy_toio(sdev->vram + destination,
+			sdev->dma_staging[staging_index], size);
 	sdev->dma_pending_size = 0;
 }
 
-static void sm750_shadow_upload(struct sm750_drm_device *sdev,
-				u32 destination, const void *source,
-				size_t size)
+static void sm750_dma_drain(struct sm750_drm_device *sdev)
+{
+	sm750_dma_submit_pending(sdev);
+	sm750_dma_complete_active(sdev);
+}
+
+static void sm750_shadow_upload_one(struct sm750_drm_device *sdev,
+				    u32 destination, const void *source,
+				    size_t size)
 {
 	bool dma_eligible = sdev->shadow_dma_enabled &&
 		size >= shadow_dma_min_bytes &&
+		size <= SM750_DRM_DMA_STAGING_SIZE &&
 		IS_ALIGNED(destination, sizeof(u32)) &&
 		IS_ALIGNED(size, sizeof(u32));
 
 	if (!size)
+		return;
+	if (size > sdev->vram_size || destination > sdev->vram_size - size)
 		return;
 	sdev->shadow_write_pending = true;
 
 	if (dma_eligible && sdev->dma_pending_size) {
 		if (destination == sdev->dma_pending_destination +
 				sdev->dma_pending_size &&
-		    sdev->dma_pending_size + size <= SM750_DRM_DMA_STAGING_SIZE) {
-			memcpy((u8 *)sdev->dma_staging + sdev->dma_pending_size,
+		    sdev->dma_pending_size + size <= sdev->dma_batch_limit) {
+			memcpy((u8 *)sdev->dma_staging[sdev->dma_fill_index] +
+			       sdev->dma_pending_size,
 			       source, size);
 			sdev->dma_pending_size += size;
-			if (sdev->dma_pending_size == SM750_DRM_DMA_STAGING_SIZE)
-				sm750_dma_flush_pending(sdev);
+			if (sdev->dma_pending_size >= sdev->dma_batch_limit)
+				sm750_dma_submit_pending(sdev);
 			return;
 		}
-		sm750_dma_flush_pending(sdev);
+		sm750_dma_submit_pending(sdev);
 		dma_eligible = sdev->shadow_dma_enabled;
 	}
 
 	if (dma_eligible) {
-		memcpy(sdev->dma_staging, source, size);
+		memcpy(sdev->dma_staging[sdev->dma_fill_index], source, size);
 		if (size == SM750_DRM_DMA_BATCH_ROW_SIZE) {
 			sdev->dma_pending_destination = destination;
 			sdev->dma_pending_size = size;
+			if (size >= sdev->dma_batch_limit)
+				sm750_dma_submit_pending(sdev);
 			return;
 		}
-		if (!sm750_dma_transfer(sdev, destination, size))
-			return;
+		sdev->dma_pending_destination = destination;
+		sdev->dma_pending_size = size;
+		sm750_dma_submit_pending(sdev);
+		return;
 	}
-	sm750_dma_flush_pending(sdev);
+	sm750_dma_drain(sdev);
 	memcpy_toio(sdev->vram + destination, source, size);
+}
+
+static void sm750_shadow_upload(struct sm750_drm_device *sdev,
+				u32 destination, const void *source,
+				size_t size)
+{
+	u32 second_offset;
+
+	if (!size || size > sdev->vram_size ||
+	    destination > sdev->vram_size - size ||
+	    sdev->shadow_upload_offset >
+		sdev->vram_size - destination - size)
+		return;
+	sm750_shadow_upload_one(sdev,
+		destination + sdev->shadow_upload_offset, source, size);
+	if (!sdev->backbuffer_mirror || !sdev->backbuffer_available)
+		return;
+	second_offset = sdev->shadow_upload_offset == sdev->scanout_offset ?
+		sdev->backbuffer_offset : sdev->scanout_offset;
+	if (second_offset == sdev->shadow_upload_offset ||
+	    second_offset > sdev->vram_size - destination - size)
+		return;
+	sm750_shadow_upload_one(sdev, destination + second_offset, source, size);
 }
 
 static void sm750_shadow_finish_uploads(struct sm750_drm_device *sdev)
 {
-	sm750_dma_flush_pending(sdev);
+	sm750_dma_drain(sdev);
 	if (sdev->shadow_write_pending)
 		wmb();
 	sdev->shadow_write_pending = false;
@@ -1482,33 +1605,35 @@ static int sm750_dma_init(struct sm750_drm_device *sdev)
 	u32 test_destination;
 	u32 expected;
 	unsigned int i;
+	unsigned int staging_index;
 	int ret;
 
 	ret = dma_set_mask_and_coherent(&sdev->pdev->dev, DMA_BIT_MASK(31));
 	if (ret)
 		return ret;
-	sdev->dma_staging = dmam_alloc_coherent(&sdev->pdev->dev,
-		SM750_DRM_DMA_STAGING_SIZE, &sdev->dma_staging_address,
-		GFP_KERNEL);
-	if (!sdev->dma_staging)
-		return -ENOMEM;
-	address = sdev->dma_staging_address;
-	if (address > DMA_BIT_MASK(31) || !IS_ALIGNED(address, sizeof(u32)) ||
-	    (address & GENMASK_ULL(22, 0)) + SM750_DRM_DMA_STAGING_SIZE >
-		BIT_ULL(23))
-		return -ERANGE;
-
-	/* Keep DMA address bits 25:23 zero and select their 8 MiB window here. */
-	sdev->dma_master_base = (address >> 23) &
-		PCI_MASTER_BASE_ADDRESS_MASK;
-	sdev->dma_source_address = DMA_1_SOURCE_ADDRESS_EXT |
-		(address & GENMASK_ULL(22, 2));
+	for (staging_index = 0;
+	     staging_index < SM750_DRM_DMA_STAGING_BUFFERS;
+	     staging_index++) {
+		sdev->dma_staging[staging_index] = dmam_alloc_coherent(
+			&sdev->pdev->dev, SM750_DRM_DMA_STAGING_SIZE,
+			&sdev->dma_staging_address[staging_index], GFP_KERNEL);
+		if (!sdev->dma_staging[staging_index])
+			return -ENOMEM;
+		address = sdev->dma_staging_address[staging_index];
+		if (address > DMA_BIT_MASK(31) ||
+		    !IS_ALIGNED(address, sizeof(u32)) ||
+		    (address & GENMASK_ULL(22, 0)) +
+			SM750_DRM_DMA_STAGING_SIZE > BIT_ULL(23))
+			return -ERANGE;
+		/* Bits 25:23 select the coherent buffer's 8 MiB window. */
+		sdev->dma_master_base[staging_index] = (address >> 23) &
+			PCI_MASTER_BASE_ADDRESS_MASK;
+		sdev->dma_source_address[staging_index] =
+			DMA_1_SOURCE_ADDRESS_EXT |
+			(address & GENMASK_ULL(22, 2));
+	}
 	sm750_enable_dma(1);
 	sm750_dma_abort(sdev);
-	/* These identify the fixed coherent staging buffer for every transfer. */
-	poke32(PCI_MASTER_BASE,
-		sdev->dma_master_base & PCI_MASTER_BASE_ADDRESS_MASK);
-	poke32(DMA_1_SOURCE, sdev->dma_source_address);
 
 	test_destination = sdev->cursor_offset - SM750_DRM_DMA_TEST_SIZE -
 		SM750_DRM_DMA_GUARD_WORDS * sizeof(u32);
@@ -1521,9 +1646,11 @@ static int sm750_dma_init(struct sm750_drm_device *sdev)
 		       SM750_DRM_DMA_TEST_SIZE + sizeof(u32) * i);
 	}
 	for (i = 0; i < SM750_DRM_DMA_TEST_SIZE; i++)
-		((u8 *)sdev->dma_staging)[i] = (i * 73U + 19U) & 0xff;
-	ret = sm750_dma_transfer(sdev, test_destination,
-				 SM750_DRM_DMA_TEST_SIZE);
+		((u8 *)sdev->dma_staging[0])[i] = (i * 73U + 19U) & 0xff;
+	ret = sm750_dma_start(sdev, 0, test_destination,
+			      SM750_DRM_DMA_TEST_SIZE);
+	if (!ret)
+		ret = sm750_dma_wait_active(sdev);
 	if (!ret) {
 		for (i = 0; i < SM750_DRM_DMA_TEST_SIZE; i++) {
 			if (readb(sdev->vram + test_destination + i) !=
@@ -1575,6 +1702,7 @@ static void sm750_dma_stop(void *data)
 
 	sm750_dma_irq_disable(sdev);
 	sdev->dma_pending_size = 0;
+	sdev->dma_active = false;
 	sm750_dma_abort(sdev);
 	sm750_enable_dma(0);
 	sdev->shadow_dma_enabled = false;
@@ -2126,6 +2254,79 @@ static void sm750_shadow_rect(struct sm750_drm_device *sdev,
 	mutex_unlock(&sdev->shadow_lock);
 }
 
+static bool sm750_damage_is_full_frame(struct sm750_drm_device *sdev,
+				       const struct drm_rect *rects,
+				       unsigned int count)
+{
+	return count == 1 && rects[0].x1 <= 0 && rects[0].y1 <= 0 &&
+		       rects[0].x2 >= sdev->shadow_source_width &&
+		       rects[0].y2 >= sdev->shadow_source_height;
+}
+
+static bool sm750_begin_staged_frame(struct sm750_drm_device *sdev,
+				     const struct drm_rect *rects,
+				     unsigned int count)
+{
+	/* Snapshot writable controls once, before any batch becomes pending. */
+	sdev->staging_rows = clamp_t(unsigned int,
+		READ_ONCE(dma_batch_rows), 1, SM750_DRM_DMA_BATCH_ROWS);
+	sdev->dma_batch_limit = sdev->staging_rows *
+		SM750_DRM_DMA_BATCH_ROW_SIZE;
+	sdev->staging_measure = false;
+	if (!sdev->backbuffer_ready ||
+	    !sm750_damage_is_full_frame(sdev, rects, count))
+		return false;
+
+	/* The inactive buffer may be stale, so a staged frame must be complete. */
+	sdev->shadow_upload_offset = sdev->backbuffer_offset;
+	sdev->shadow_source_snapshot_valid = false;
+	sdev->rgb565_scanout_snapshot_valid = false;
+	sdev->staging_measure = READ_ONCE(staging_timing);
+	sdev->staging_batches = 0;
+	sdev->staging_bytes = 0;
+	sdev->staging_started_ns = ktime_get_ns();
+	return true;
+}
+
+static bool sm750_present_staged_frame(struct sm750_drm_device *sdev)
+{
+	u32 address;
+	u32 old_scanout;
+	u64 uploaded_ns = ktime_get_ns();
+	int ret;
+
+	mutex_lock(&sdev->mode_lock);
+	poke32(SM750_DRM_FB_ADDRESS, SM750_DRM_FB_ADDRESS_STATUS |
+	       (sdev->backbuffer_offset & SM750_DRM_FB_ADDRESS_MASK));
+	ret = readl_poll_timeout(sdev->regs + SM750_DRM_FB_ADDRESS, address,
+			 !(address & SM750_DRM_FB_ADDRESS_STATUS), 100,
+			 SM750_DRM_FLIP_TIMEOUT_US);
+	mutex_unlock(&sdev->mode_lock);
+	if (sdev->staging_measure)
+		drm_info(&sdev->drm,
+			 "staging-bench rows=%u frame_bytes=%u dma_bytes=%llu batches=%u upload_us=%llu flip_us=%llu ok=%u\n",
+			 sdev->staging_rows, sdev->scanout_frame_size,
+			 sdev->staging_bytes, sdev->staging_batches,
+			 div_u64(uploaded_ns - sdev->staging_started_ns, 1000),
+			 div_u64(ktime_get_ns() - uploaded_ns, 1000), !ret);
+	if (ret) {
+		drm_err_ratelimited(&sdev->drm,
+			"full-frame backbuffer flip timed out; disabling flips and mirroring updates\n");
+		sdev->backbuffer_ready = false;
+		sdev->backbuffer_mirror = true;
+		sdev->shadow_upload_offset = sdev->scanout_offset;
+		sdev->shadow_source_snapshot_valid = false;
+		sdev->rgb565_scanout_snapshot_valid = false;
+		return false;
+	}
+
+	old_scanout = sdev->scanout_offset;
+	sdev->scanout_offset = sdev->backbuffer_offset;
+	sdev->backbuffer_offset = old_scanout;
+	sdev->shadow_upload_offset = sdev->scanout_offset;
+	return true;
+}
+
 static bool sm750_damage_lossless_union(const struct drm_rect *first,
 					const struct drm_rect *second,
 					struct drm_rect *result)
@@ -2275,6 +2476,7 @@ static void sm750_async_shadow_work(struct work_struct *work)
 	struct drm_rect rects[SM750_DRM_MAX_DAMAGE_RECTS];
 	unsigned int count;
 	unsigned int i;
+	bool staged;
 
 	for (;;) {
 		mutex_lock(&sdev->async_lock);
@@ -2290,11 +2492,20 @@ static void sm750_async_shadow_work(struct work_struct *work)
 		mutex_unlock(&sdev->async_lock);
 
 		mutex_lock(&sdev->shadow_lock);
+		staged = sm750_begin_staged_frame(sdev, rects, count);
 		for (i = 0; i < count; i++)
 			sm750_shadow_source_rect_locked(sdev, NULL,
 				SM750_DRM_MAX_WIDTH * sizeof(u32), true,
 				&rects[i]);
 		sm750_shadow_finish_uploads(sdev);
+		if (staged && !sm750_present_staged_frame(sdev)) {
+			/* A late flip is harmless once both buffers match. */
+			for (i = 0; i < count; i++)
+				sm750_shadow_source_rect_locked(sdev, NULL,
+					SM750_DRM_MAX_WIDTH * sizeof(u32), true,
+					&rects[i]);
+			sm750_shadow_finish_uploads(sdev);
+		}
 		mutex_unlock(&sdev->shadow_lock);
 	}
 }
@@ -2770,11 +2981,17 @@ static void sm750_pipe_enable(struct drm_simple_display_pipe *pipe,
 	struct drm_rect damage;
 	u32 pitch;
 	u32 offset;
+	u64 frame_size;
 	u8 cpp;
 	int ret;
 
 	if (sdev->shadow_scanout) {
 		sm750_async_quiesce(sdev);
+		sdev->backbuffer_ready = false;
+		sdev->backbuffer_available = false;
+		sdev->backbuffer_mirror = false;
+		sdev->scanout_offset = 0;
+		sdev->shadow_upload_offset = 0;
 		sdev->softscale_active = sm750_mode_is_softscaled(
 			&crtc_state->adjusted_mode);
 		sdev->softscale_source_width = sdev->softscale_active ?
@@ -2795,6 +3012,17 @@ static void sm750_pipe_enable(struct drm_simple_display_pipe *pipe,
 			crtc_state->adjusted_mode.hdisplay) * cpp,
 			      SM750_DRM_LINE_ALIGN);
 		sdev->scanout_pitch = pitch;
+		sdev->dma_batch_limit = 8 * SM750_DRM_DMA_BATCH_ROW_SIZE;
+		frame_size = (u64)pitch * crtc_state->adjusted_mode.vdisplay;
+		if (frame_size <= U32_MAX) {
+			sdev->scanout_frame_size = frame_size;
+			sdev->backbuffer_offset = ALIGN(sdev->scanout_frame_size,
+						       SM750_DRM_LINE_ALIGN);
+			sdev->backbuffer_available = backbuffer_staging &&
+				sdev->backbuffer_offset <= sdev->cursor_offset &&
+				sdev->scanout_frame_size <=
+					sdev->cursor_offset - sdev->backbuffer_offset;
+		}
 		offset = 0;
 		damage.x1 = 0;
 		damage.y1 = 0;
@@ -2814,6 +3042,11 @@ static void sm750_pipe_enable(struct drm_simple_display_pipe *pipe,
 				 pitch, offset, cpp);
 	mutex_unlock(&sdev->mode_lock);
 	if (!ret) {
+		sdev->backbuffer_ready = sdev->backbuffer_available;
+		if (sdev->backbuffer_ready)
+			drm_info(&sdev->drm,
+				 "full-frame backbuffer staging enabled (%u bytes per buffer)\n",
+				 sdev->scanout_frame_size);
 		drm_crtc_vblank_on(&pipe->crtc);
 		sm750_arm_vblank_event(pipe);
 		return;
@@ -2826,6 +3059,10 @@ fail:
 	sdev->shadow_source_height = 0;
 	sdev->shadow_source_snapshot_valid = false;
 	sdev->rgb565_scanout_snapshot_valid = false;
+	sdev->backbuffer_available = false;
+	sdev->backbuffer_ready = false;
+	sdev->backbuffer_mirror = false;
+	sdev->shadow_upload_offset = 0;
 	drm_err(&sdev->drm, "failed to enable HDMI mode: %d\n", ret);
 }
 
@@ -2848,9 +3085,19 @@ static void sm750_pipe_update(struct drm_simple_display_pipe *pipe,
 							 rect_count))
 			goto event;
 		if (rect_count) {
+			bool staged;
+
 			mutex_lock(&sdev->shadow_lock);
+			staged = sm750_begin_staged_frame(sdev, rects,
+							  rect_count);
 			sm750_process_damage_rects(sdev, state, rects, rect_count);
 			sm750_shadow_finish_uploads(sdev);
+			if (staged && !sm750_present_staged_frame(sdev)) {
+				/* Recover to identical buffers before more damage. */
+				sm750_process_damage_rects(sdev, state, rects,
+							   rect_count);
+				sm750_shadow_finish_uploads(sdev);
+			}
 			mutex_unlock(&sdev->shadow_lock);
 		}
 	} else if (state->fb &&
@@ -2884,6 +3131,10 @@ static void sm750_pipe_disable(struct drm_simple_display_pipe *pipe)
 	sdev->shadow_source_height = 0;
 	sdev->shadow_source_snapshot_valid = false;
 	sdev->rgb565_scanout_snapshot_valid = false;
+	sdev->backbuffer_available = false;
+	sdev->backbuffer_ready = false;
+	sdev->backbuffer_mirror = false;
+	sdev->shadow_upload_offset = 0;
 }
 
 static enum drm_mode_status

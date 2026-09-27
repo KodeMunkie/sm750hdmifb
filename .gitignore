@@ -14,6 +14,8 @@ modules.order
 /tests/check-vblank
 /tests/test-bbdither-rgb565
 /tests/test-scale-optimizations
+/tools/staging-pattern
+__pycache__/
 
 # Editor and desktop files
 *~

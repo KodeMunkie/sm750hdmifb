@@ -10,7 +10,7 @@ bash -n "$builder" "$project_dir/packaging/write-xorg-config.sh"
 sh -n "$project_dir/packaging/drm-postinst" \
 	"$project_dir/packaging/drm-prerm" \
 	"$project_dir/packaging/drm-postrm"
-grep -F 'PACKAGE_VERSION="0.5.6"' "$dkms_config" >/dev/null
+grep -F 'PACKAGE_VERSION="0.5.7"' "$dkms_config" >/dev/null
 grep -F 'BUILT_MODULE_NAME[0]="sm750hdmidrm"' "$dkms_config" >/dev/null
 grep -F 'BUILD_EXCLUSIVE_KERNEL="^(6\\.(1[7-9]|[2-9][0-9])\\.|[7-9]\\.|[1-9][0-9]\\.)"' \
 	"$dkms_config" >/dev/null
