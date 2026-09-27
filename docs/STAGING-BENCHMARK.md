@@ -2,7 +2,7 @@
 
 Build with `make check staging-benchmark` and load the candidate module after a
 normal desktop logout. Only the current kernel needs to change. The default is
-still eight rows, with two coherent buffers each reserving room for 128 rows.
+sixteen rows, with two coherent buffers each reserving room for 128 rows.
 
 From the graphical desktop terminal run:
 
@@ -14,7 +14,7 @@ The ordinary X11 window requests fullscreen through the window manager. It
 alternates the same two checkerboard images 44 times per phase, paced at 250 ms.
 Press any key in that window to abort. The fourteen phases compare 4, 8, 16, 32,
 64, 96 and 128 rows, then repeat in reverse to reduce ordering effects. Allow about three minutes and
-leave the benchmark window visible. The script restores eight rows on exit.
+leave the benchmark window visible. The script restores sixteen rows on exit.
 
 `upload_us` measures conversion, snapshot updates, CPU staging copies, DMA
 submission and completion, starting before conversion and ending after the
@@ -38,6 +38,6 @@ including the 2464/2560 logical softscale modes. The analyser checks that each
 frame's batch count matches the selected size, including its shorter final
 batch. Other scanout widths can bypass row batching and will be rejected.
 
-Two local benchmark runs favoured the retained eight-row default: median upload
-90.200/90.336 ms at eight rows versus 91.722/91.831 ms at 32 rows. Larger
-batches reduced submission counts but did not improve upload time.
+The default is 16 rows, matching the observed higher frame rate. In the expanded
+capture, mean upload plus flip time was 96.465 ms at 16 rows versus 96.530 ms
+at eight rows. This is a small difference; upload time alone favoured eight.

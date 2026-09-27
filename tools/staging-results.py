@@ -32,4 +32,4 @@ for rows, samples in sorted(groups.items()):
     print(f'{rows:4} {len(samples):7} {statistics.median(times):17.3f} '
           f'{p95:14.3f} {statistics.median(s[5] for s in samples)/1000:15.3f} '
           f'{statistics.median(s[3] for s in samples):14.0f}')
-print('Upload excludes vblank wait; defaults have been restored to eight rows.')
+print('Upload excludes vblank wait; defaults have been restored to sixteen rows.')

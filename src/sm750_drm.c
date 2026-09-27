@@ -187,7 +187,7 @@ static bool enable_dma = SM750_DRM_DEFAULT_ENABLE_DMA;
 static bool disable_dma;
 static bool async_updates = SM750_DRM_DEFAULT_ASYNC_UPDATES;
 static bool backbuffer_staging = true;
-static unsigned int dma_batch_rows = 8;
+static unsigned int dma_batch_rows = 16;
 static bool staging_timing;
 static unsigned int shadow_dma_min_bytes = 4096;
 module_param(scanout_format, charp, 0444);
@@ -204,7 +204,7 @@ module_param(backbuffer_staging, bool, 0444);
 module_param(dma_batch_rows, uint, 0644);
 module_param(staging_timing, bool, 0644);
 MODULE_PARM_DESC(dma_batch_rows,
-	"DMA batch rows, sampled per update and clamped to 1-128 (default 8)");
+	"DMA batch rows, sampled per update and clamped to 1-128 (default 16)");
 MODULE_PARM_DESC(staging_timing,
 	"Log complete-frame upload and presentation timing for benchmarking");
 module_param(shadow_dma_min_bytes, uint, 0444);
@@ -3012,7 +3012,7 @@ static void sm750_pipe_enable(struct drm_simple_display_pipe *pipe,
 			crtc_state->adjusted_mode.hdisplay) * cpp,
 			      SM750_DRM_LINE_ALIGN);
 		sdev->scanout_pitch = pitch;
-		sdev->dma_batch_limit = 8 * SM750_DRM_DMA_BATCH_ROW_SIZE;
+		sdev->dma_batch_limit = 16 * SM750_DRM_DMA_BATCH_ROW_SIZE;
 		frame_size = (u64)pitch * crtc_state->adjusted_mode.vdisplay;
 		if (frame_size <= U32_MAX) {
 			sdev->scanout_frame_size = frame_size;

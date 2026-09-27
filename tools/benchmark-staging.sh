@@ -13,7 +13,7 @@ output=$(mktemp -d /home/brownb2/sm750-batch-benchmark-XXXXXXXX)
 chmod 0755 "$output"
 old_timing=$(cat "$parameters/staging_timing")
 cleanup() {
- printf '8\n' >"$parameters/dma_batch_rows"
+ printf '16\n' >"$parameters/dma_batch_rows"
  printf '%s\n' "$old_timing" >"$parameters/staging_timing"
  chmod -R a+rX "$output"
 }
