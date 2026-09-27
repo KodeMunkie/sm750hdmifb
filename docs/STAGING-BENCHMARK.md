@@ -4,10 +4,10 @@ Build with `make check staging-benchmark` and load the candidate module after a
 normal desktop logout. Only the current kernel needs to change. The default is
 sixteen rows, with two coherent buffers each reserving room for 128 rows.
 
-From the graphical desktop terminal run:
+From a graphical desktop terminal in the repository root run:
 
 ```sh
-pkexec /bin/bash /home/brownb2/Work/sm750hdmifb/tools/benchmark-staging.sh "$DISPLAY" "$HOME/.Xauthority"
+pkexec /bin/bash tools/benchmark-staging.sh "$DISPLAY" "$HOME/.Xauthority"
 ```
 
 The ordinary X11 window requests fullscreen through the window manager. It
@@ -30,8 +30,8 @@ optimal batch size from an incomplete run. Check that both directions agree and
 repeat before treating a small median difference as a performance win. Kernel
 logging is enabled only for the measurement and happens after the sampled times.
 
-The dated capture directory under `/home/brownb2` retains each phase log and the
-summary. No default configuration is changed based on the result.
+The dated capture directory under `/tmp` (or `$TMPDIR`) retains each phase log
+and the summary. No default configuration is changed based on the result.
 
 This comparison targets the 2048-pixel RGB565 physical scanout (4096-byte rows),
 including the 2464/2560 logical softscale modes. The analyser checks that each
