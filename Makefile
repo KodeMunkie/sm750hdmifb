@@ -26,6 +26,7 @@ check: all tests/check-vblank tests/test-bbdither-rgb565 \
 	./tests/check-backbuffer-staging.sh
 	./tests/check-shadow-async.sh
 	./tests/check-shadow-source-damage.sh
+	python3 tests/test-vblank-timer.py
 	./tests/test-bbdither-rgb565
 	./tests/test-scale-optimizations
 	python3 tests/test-staging-results.py

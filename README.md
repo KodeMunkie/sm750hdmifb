@@ -53,6 +53,9 @@ series and for Linux 7.0 onward. It currently builds and passes the full test
 suite against 6.17 and 7.0 Ubuntu kernels; the manual CI workflow also builds
 against Ubuntu 24.04's 6.17 kernel headers.
 
+All supported kernels use the driver's private vblank timer to avoid a restart
+deadlock in the DRM core timer helper. See [vblank timer locking and tests](docs/VBLANK.md).
+
 There is no fixed upper version cap, but future kernels can change internal DRM
 APIs. Because this is an out-of-tree driver, a new kernel version may require a
 source update even though it falls within the intended `6.17+` range.

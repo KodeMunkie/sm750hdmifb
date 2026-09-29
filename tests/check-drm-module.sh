@@ -40,21 +40,15 @@ for symbol in drm_gem_shmem_dumb_create \
 		exit 1
 	}
 done
-if [[ $(modinfo -F vermagic "$module") == 7.* ]]; then
-	for symbol in drm_crtc_vblank_helper_enable_vblank_timer \
-			drm_crtc_vblank_helper_disable_vblank_timer \
-			drm_crtc_vblank_helper_get_vblank_timestamp_from_timer; do
-		grep -E "[[:space:]]${symbol}$" <<<"$undefined" >/dev/null || {
-			echo "DRM 7.x module lacks core vblank helper: $symbol" >&2
-			exit 1
-		}
-	done
-else
-	grep -E '[[:space:]]drm_crtc_handle_vblank$' <<<"$undefined" \
-		>/dev/null || {
-		echo "DRM pre-7.0 module lacks private timer handler." >&2
-		exit 1
-	}
+grep -E '[[:space:]]drm_crtc_handle_vblank$' <<<"$undefined" \
+	>/dev/null || {
+	echo "DRM module lacks private timer handler." >&2
+	exit 1
+}
+if grep -E '[[:space:]]drm_crtc_vblank_(helper_.*_timer|start_timer|cancel_timer)$' \
+		<<<"$undefined" >/dev/null; then
+	echo "DRM module uses the core timer with the callback restart race." >&2
+	exit 1
 fi
 for symbol in devm_request_threaded_irq wait_for_completion_timeout; do
 	grep -E "[[:space:]]${symbol}$" <<<"$undefined" >/dev/null || {

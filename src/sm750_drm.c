@@ -44,9 +44,6 @@
 #include <drm/drm_print.h>
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
-#include <drm/drm_vblank_helper.h>
-#endif
 
 #include "ddk750_chip.h"
 #include "ddk750_display.h"
@@ -112,10 +109,8 @@
 #define SM750_DRM_HWC_LOCATION_X_MASK PANEL_HWC_LOCATION_X_MASK
 #define SM750_DRM_HWC_COLOR_12 PANEL_HWC_COLOR_12
 #define SM750_DRM_HWC_COLOR_3 PANEL_HWC_COLOR_3
-#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 #define SM750_VBLANK_RETRY_NS NSEC_PER_MSEC
 #define SM750_VBLANK_MIN_DELAY_NS 50000ULL
-#endif
 
 void __iomem *mmio750;
 bool sm750_test_reduced_pll_ratio;
@@ -243,10 +238,8 @@ struct sm750_drm_device {
 	struct mutex async_lock;
 	struct workqueue_struct *shadow_workqueue;
 	struct work_struct shadow_work;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	struct hrtimer vblank_timer;
 	spinlock_t vblank_lock;
-#endif
 	void __iomem *regs;
 	void __iomem *vram;
 	resource_size_t vram_base;
@@ -298,13 +291,11 @@ struct sm750_drm_device {
 	u32 hotplug_preferred_height;
 	u32 hotplug_preferred_refresh;
 	u8 connected_edid[SM750_DRM_EDID_SIZE];
-#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	u64 vblank_line_ns;
 	u64 vblank_frame_ns;
 	u16 vblank_start;
 	u16 vblank_vtotal;
 	bool vblank_timer_enabled;
-#endif
 	bool phase_falling;
 	bool shadow_scanout;
 	bool rgb565;
@@ -341,7 +332,12 @@ struct sm750_drm_device {
 static enum drm_mode_status
 sm750_mode_valid(const struct drm_display_mode *mode, u32 vram_size);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
+/*
+ * Use our timer on every supported kernel. The DRM core timer restart helper
+ * can wait for a callback while holding vblank_time_lock, which that callback
+ * needs. Never wait for a callback in the DRM enable/disable hooks, and never
+ * hold vblank_lock while calling back into DRM.
+ */
 static u64 sm750_vblank_first_delay_locked(struct sm750_drm_device *sdev)
 {
 	u32 line;
@@ -376,6 +372,11 @@ static enum hrtimer_restart sm750_vblank_timer_fn(struct hrtimer *timer)
 		spin_unlock_irqrestore(&sdev->vblank_lock, flags);
 		return HRTIMER_NORESTART;
 	}
+	/* A disable/re-enable may have already armed the next invocation. */
+	if (hrtimer_is_queued(timer)) {
+		spin_unlock_irqrestore(&sdev->vblank_lock, flags);
+		return HRTIMER_NORESTART;
+	}
 	hrtimer_forward_now(timer, ns_to_ktime(sdev->vblank_frame_ns));
 	spin_unlock_irqrestore(&sdev->vblank_lock, flags);
 
@@ -390,13 +391,13 @@ static void sm750_vblank_timer_stop(struct sm750_drm_device *sdev,
 
 	spin_lock_irqsave(&sdev->vblank_lock, flags);
 	sdev->vblank_timer_enabled = false;
+	/* Serialize cancellation with enable so it cannot cancel a newer arm. */
+	hrtimer_try_to_cancel(&sdev->vblank_timer);
 	spin_unlock_irqrestore(&sdev->vblank_lock, flags);
+	/* Only teardown callers, after releasing DRM locks, may wait. */
 	if (wait)
 		hrtimer_cancel(&sdev->vblank_timer);
-	else
-		hrtimer_try_to_cancel(&sdev->vblank_timer);
 }
-#endif
 
 static const struct drm_display_mode sm750_standard_modes[] = {
 	/* VESA CVT-RBv2: 59.94, 60, 70, 72 and 75 Hz. */
@@ -2940,7 +2941,6 @@ static void sm750_send_vblank_event(struct drm_simple_display_pipe *pipe)
 	spin_unlock_irqrestore(&pipe->crtc.dev->event_lock, flags);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 static int sm750_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
 {
 	struct sm750_drm_device *sdev = pipe_to_sm750(pipe);
@@ -2960,16 +2960,28 @@ static int sm750_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
 	sdev->vblank_vtotal = mode->vtotal;
 	sdev->vblank_timer_enabled = true;
 	delay_ns = sm750_vblank_first_delay_locked(sdev);
-	spin_unlock_irqrestore(&sdev->vblank_lock, flags);
-
 	hrtimer_start(&sdev->vblank_timer, ns_to_ktime(delay_ns),
 		      HRTIMER_MODE_REL);
+	spin_unlock_irqrestore(&sdev->vblank_lock, flags);
 	return 0;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 static void sm750_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
 {
 	sm750_vblank_timer_stop(pipe_to_sm750(pipe), false);
+}
+#else
+static int sm750_crtc_enable_vblank(struct drm_crtc *crtc)
+{
+	struct sm750_drm_device *sdev = to_sm750_drm(crtc->dev);
+
+	return sm750_pipe_enable_vblank(&sdev->pipe);
+}
+
+static void sm750_crtc_disable_vblank(struct drm_crtc *crtc)
+{
+	sm750_vblank_timer_stop(to_sm750_drm(crtc->dev), false);
 }
 #endif
 
@@ -3180,7 +3192,8 @@ static const struct drm_crtc_funcs sm750_crtc_funcs = {
 	.page_flip = drm_atomic_helper_page_flip,
 	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state,
-	DRM_CRTC_VBLANK_TIMER_FUNCS,
+	.enable_vblank = sm750_crtc_enable_vblank,
+	.disable_vblank = sm750_crtc_disable_vblank,
 };
 #endif
 
@@ -3424,11 +3437,9 @@ static int sm750_pci_probe(struct pci_dev *pdev,
 	mutex_init(&sdev->cursor_lock);
 	mutex_init(&sdev->async_lock);
 	INIT_WORK(&sdev->shadow_work, sm750_async_shadow_work);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	spin_lock_init(&sdev->vblank_lock);
 	hrtimer_setup(&sdev->vblank_timer, sm750_vblank_timer_fn,
 		      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-#endif
 
 	sdev->regs = pci_iomap(pdev, 1, min_t(resource_size_t,
 					      pci_resource_len(pdev, 1), SZ_2M));
@@ -3640,9 +3651,7 @@ static void sm750_pci_remove(struct pci_dev *pdev)
 	drm_kms_helper_poll_fini(&sdev->drm);
 	drm_dev_unplug(&sdev->drm);
 	drm_atomic_helper_shutdown(&sdev->drm);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	sm750_vblank_timer_stop(sdev, true);
-#endif
 	mutex_lock(&sdev->mode_lock);
 	sm750_sii902x_shutdown();
 	mutex_unlock(&sdev->mode_lock);
@@ -3652,12 +3661,10 @@ static void sm750_pci_shutdown(struct pci_dev *pdev)
 {
 	struct sm750_drm_device *sdev = pci_get_drvdata(pdev);
 
-	if (sdev)
-		drm_atomic_helper_shutdown(&sdev->drm);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
-	if (sdev)
-		sm750_vblank_timer_stop(sdev, true);
-#endif
+	if (!sdev)
+		return;
+	drm_atomic_helper_shutdown(&sdev->drm);
+	sm750_vblank_timer_stop(sdev, true);
 }
 
 static int sm750_pm_suspend(struct device *dev)
@@ -3669,9 +3676,7 @@ static int sm750_pm_suspend(struct device *dev)
 	ret = drm_mode_config_helper_suspend(&sdev->drm);
 	if (ret)
 		return ret;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	sm750_vblank_timer_stop(sdev, true);
-#endif
 	mutex_lock(&sdev->mode_lock);
 	sm750_sii902x_shutdown();
 	mutex_unlock(&sdev->mode_lock);

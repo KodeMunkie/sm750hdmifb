@@ -121,8 +121,6 @@ grep -F 'module_param(preferred_height, uint, 0444);' "$source_file" >/dev/null
 grep -F 'module_param(preferred_refresh, uint, 0444);' "$source_file" >/dev/null
 for requirement in \
 	'drm_vblank_init(drm, 1);' \
-	'#include <drm/drm_vblank_helper.h>' \
-	'DRM_CRTC_VBLANK_TIMER_FUNCS,' \
 	'sdev->pipe.crtc.funcs = &sm750_crtc_funcs;' \
 	'PANEL_CURRENT_LINE' \
 	'drm_crtc_vblank_get(&pipe->crtc)' \
@@ -131,6 +129,8 @@ for requirement in \
 	'drm_crtc_vblank_on(&pipe->crtc);' \
 	'.enable_vblank = sm750_pipe_enable_vblank,' \
 	'.disable_vblank = sm750_pipe_disable_vblank,' \
+	'.enable_vblank = sm750_crtc_enable_vblank,' \
+	'.disable_vblank = sm750_crtc_disable_vblank,' \
 	'hrtimer_try_to_cancel(&sdev->vblank_timer);' \
 	'hrtimer_cancel(&sdev->vblank_timer);'; do
 	grep -F "$requirement" "$source_file" >/dev/null || {
@@ -142,7 +142,11 @@ if ! grep -F '#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)' \
 	"$source_file" >/dev/null ||
 	! grep -F '#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)' \
 	"$source_file" >/dev/null; then
-	echo "DRM source lacks versioned core-timer/fallback selection." >&2
+	echo "DRM source lacks versioned pipe/CRTC vblank hooks." >&2
+	exit 1
+fi
+if grep -F 'DRM_CRTC_VBLANK_TIMER_FUNCS' "$source_file" >/dev/null; then
+	echo "DRM source still selects the core timer with the restart race." >&2
 	exit 1
 fi
 grep -F 'devm_request_irq(&sdev->pdev->dev, sdev->pdev->irq,' \
