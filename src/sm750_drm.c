@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/aperture.h>
 #include <linux/completion.h>
+#include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/fb.h>
 #include <linux/hrtimer.h>
@@ -958,14 +959,30 @@ static struct edid *sm750_connector_read_edid(struct drm_connector *connector)
 	struct edid *edid;
 	u8 checksum;
 	unsigned int i;
+	unsigned int attempt;
 	int ret;
 
 	edid = kmalloc(256, GFP_KERNEL);
 	if (!edid)
 		return NULL;
-	mutex_lock(&sdev->mode_lock);
-	ret = sm750_sii902x_read_edid(&sdev->pdev->dev, (u8 *)edid, 256);
-	mutex_unlock(&sdev->mode_lock);
+	for (attempt = 0; attempt < 2; attempt++) {
+		mutex_lock(&sdev->mode_lock);
+		ret = sm750_sii902x_read_edid(&sdev->pdev->dev,
+					   (u8 *)edid, 256);
+		mutex_unlock(&sdev->mode_lock);
+		if (!ret)
+			break;
+		if (!attempt) {
+			/* A waking monitor may assert HPD before DDC is ready.
+			 * Retry before publishing missing EDID/fallback modes,
+			 * without holding the hardware lock during warm-up.
+			 */
+			drm_dbg_kms(connector->dev,
+				    "monitor EDID read failed: %d; retrying in 3 seconds\n",
+				    ret);
+			msleep(3000);
+		}
+	}
 	if (ret) {
 		kfree(edid);
 		drm_connector_update_edid_property(connector, NULL);
