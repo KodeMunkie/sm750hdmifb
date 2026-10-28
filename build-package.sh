@@ -5,7 +5,7 @@ set -euo pipefail
 readonly project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 readonly package=sm750hdmifb
 readonly module=sm750hdmidrm
-readonly version=0.5.8
+readonly version=0.5.9
 readonly arch=all
 readonly build_root="${project_dir}/build/package/${package}_${version}_${arch}"
 readonly dist_dir="${project_dir}/dist"
@@ -44,6 +44,9 @@ install -m 0755 "${project_dir}/packaging/write-xorg-config.sh" \
 	"${build_root}/usr/lib/${package}/write-xorg-config"
 install -m 0644 "${project_dir}/packaging/copyright" \
 	"${build_root}/usr/share/doc/${package}/copyright"
+install -m 0644 "${project_dir}/docs/RELEASE-NOTES.md" \
+	"${project_dir}/docs/TESTING.md" \
+	"${build_root}/usr/share/doc/${package}/"
 install -m 0755 "${project_dir}/packaging/drm-postinst" \
 	"${build_root}/DEBIAN/postinst"
 install -m 0755 "${project_dir}/packaging/drm-prerm" \

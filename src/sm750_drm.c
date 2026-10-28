@@ -55,6 +55,13 @@
 #include "sm750_dither.h"
 #include "sm750_drm_mode.h"
 
+/* DRM renamed the atomic transaction object in Linux 7.2. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+typedef struct drm_atomic_commit sm750_atomic_commit;
+#else
+typedef struct drm_atomic_state sm750_atomic_commit;
+#endif
+
 #define SM750_DRM_NAME "sm750hdmidrm"
 #define SM750_DRM_MAX_WIDTH 2560
 #define SM750_DRM_PHYSICAL_MAX_WIDTH 2048
@@ -1217,7 +1224,11 @@ static const struct drm_connector_funcs sm750_connector_funcs = {
 	.detect = sm750_connector_detect,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.destroy = drm_connector_cleanup,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0)
+	.atomic_create_state = drm_atomic_helper_connector_create_state,
+#else
 	.reset = drm_atomic_helper_connector_reset,
+#endif
 	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
 };
@@ -2722,7 +2733,7 @@ static void sm750_cursor_encode(struct sm750_drm_device *sdev,
 }
 
 static int sm750_cursor_atomic_check(struct drm_plane *plane,
-				     struct drm_atomic_state *atomic_state)
+				    sm750_atomic_commit *atomic_state)
 {
 	struct drm_plane_state *state =
 		drm_atomic_get_new_plane_state(atomic_state, plane);
@@ -2746,7 +2757,7 @@ static int sm750_cursor_atomic_check(struct drm_plane *plane,
 }
 
 static void sm750_cursor_atomic_update(struct drm_plane *plane,
-				       struct drm_atomic_state *atomic_state)
+				       sm750_atomic_commit *atomic_state)
 {
 	struct sm750_drm_device *sdev =
 		container_of(plane, struct sm750_drm_device, cursor_plane);
@@ -2851,7 +2862,7 @@ unlock:
 }
 
 static void sm750_cursor_atomic_disable(struct drm_plane *plane,
-					struct drm_atomic_state *atomic_state)
+					sm750_atomic_commit *atomic_state)
 {
 	struct sm750_drm_device *sdev =
 		container_of(plane, struct sm750_drm_device, cursor_plane);
@@ -3203,7 +3214,11 @@ static const struct drm_simple_display_pipe_funcs sm750_shadow_pipe_funcs = {
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
 static const struct drm_crtc_funcs sm750_crtc_funcs = {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0)
+	.atomic_create_state = drm_atomic_helper_crtc_create_state,
+#else
 	.reset = drm_atomic_helper_crtc_reset,
+#endif
 	.destroy = drm_crtc_cleanup,
 	.set_config = drm_atomic_helper_set_config,
 	.page_flip = drm_atomic_helper_page_flip,

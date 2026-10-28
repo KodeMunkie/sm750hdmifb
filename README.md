@@ -36,7 +36,7 @@ git clone https://github.com/KodeMunkie/sm750hdmifb.git
 cd sm750hdmifb
 make check
 ./build-package.sh
-sudo apt install ./dist/sm750hdmifb_0.5.8_all.deb
+sudo apt install ./dist/sm750hdmifb_0.5.9_all.deb
 sudo reboot
 ```
 
@@ -46,18 +46,27 @@ module is `sm750hdmidrm.ko` so it cannot be confused with `sm750fb.ko`.
 
 ### Kernel compatibility
 
+**Kernels >= 7.1 are untested.** Offline compilation checks are available,
+but boot and runtime behavior have not been validated on those kernels.
+See the [0.5.9 release notes](docs/RELEASE-NOTES.md).
+
 The driver is intended for **Linux 6.17 and newer**. DKMS deliberately refuses
 older kernels because the required DRM interfaces are not supported by this
 project. The source has compatibility paths for Linux 6.17 through the 6.x
-series and for Linux 7.0 onward. It currently builds and passes the full test
-suite against 6.17 and 7.0 Ubuntu kernels; the manual CI workflow also builds
-against Ubuntu 24.04's 6.17 kernel headers.
+series and for Linux 7.0 onward, including the atomic transaction rename in
+7.2 and the state-creation callbacks introduced in 7.3 before removal of the
+old CRTC reset API in 7.4. The compatibility matrix covers Ubuntu 6.17 and
+7.0 headers, mainline 6.18, 7.1 and 7.2 headers, 7.3-rc3 headers, and the
+2026-10-28 mainline daily headers from the 7.4 merge window. All three scanout
+defaults are built; these are offline checks, not hardware boot tests.
+See [Testing and recovery](docs/TESTING.md) for the exact validation scope.
 
 All supported kernels use the driver's private vblank timer to avoid a restart
 deadlock in the DRM core timer helper. See [vblank timer locking and tests](docs/VBLANK.md).
 
 There is no fixed upper version cap, but future kernels can change internal DRM
-APIs. Because this is an out-of-tree driver, a new kernel version may require a
+APIs. Linux 7.4 is still in development, so its final release must be checked
+again. Because this is an out-of-tree driver, a new kernel version may require a
 source update even though it falls within the intended `6.17+` range.
 
 Prebuilt packages, when available, are published under

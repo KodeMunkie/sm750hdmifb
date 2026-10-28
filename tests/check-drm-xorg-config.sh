@@ -4,7 +4,7 @@ set -euo pipefail
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 generator=$project_dir/packaging/write-xorg-config.sh
-config=$(mktemp /tmp/sm750hdmidrm-xorg.XXXXXX.conf)
+config=$(mktemp "${TMPDIR:-/tmp}/sm750hdmidrm-xorg.XXXXXX.conf")
 trap 'rm -f -- "$config"' EXIT
 
 "$generator" "$config" 0000:01:02.0
